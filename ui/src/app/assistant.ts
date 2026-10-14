@@ -124,13 +124,14 @@ export class Assistant implements AfterViewChecked {
   submit(ev: Event) {
     ev.preventDefault();
     const t = this.draft();
-    if (!t.trim()) return;
+    // Enter reaches here even while Send is disabled; keep the draft until it can be sent.
+    if (!t.trim() || this.store.chatBusy() || !this.store.projectId()) return;
     this.draft.set('');
     void this.store.send(t);
   }
 
   key(ev: KeyboardEvent) {
-    if (ev.key === 'Enter' && !ev.shiftKey) this.submit(ev);
+    if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) this.submit(ev);
   }
 
   ngAfterViewChecked() {

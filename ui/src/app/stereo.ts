@@ -12,7 +12,7 @@ import { Store } from './store';
 
       <section class="gauge-wrap">
         <h2>Correlation across the song</h2>
-        <p class="muted lead">Spread of 400 ms windows. +1 is mono, 0 is unrelated, below 0 cancels in mono.</p>
+        <p class="muted lead">How correlation varies across 400 ms windows. +1 is mono, 0 is unrelated, and anything below 0 cancels in mono.</p>
         <div class="gauge" role="img" [attr.aria-label]="'Window correlation from ' + num(r.stereo.window_corr_min, 2) + ' to 1'">
           <div class="scale"><span>−1</span><span>0</span><span>+1</span></div>
           <div class="track">
@@ -40,7 +40,7 @@ import { Store } from './store';
                 <td class="faint">{{ w.level_dbfs < -40 ? 'quiet, likely a reverb tail' : '' }}</td>
               </tr>
             } @empty {
-              <tr><td colspan="4" class="muted">No windows below 0.35.</td></tr>
+              <tr><td colspan="4" class="muted">No moments below 0.35.</td></tr>
             }
           </tbody>
         </table>

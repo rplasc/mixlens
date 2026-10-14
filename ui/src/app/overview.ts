@@ -169,10 +169,10 @@ export class Overview {
     const kind = this.store.report()?.kind;
     if (this.store.kindTipSeen() || !kind || kind === 'reference') return null;
     if (kind === 'mix') {
-      return 'Checked as a mix: headroom and bus compression, before mastering. If this is a finished master, switch to Master above to check it against your streaming target.';
+      return 'MixLens checked this as a mix, so it looked at headroom and bus compression before mastering. If this is a finished master, switch to Master above to check it against your streaming target.';
     }
     const where = this.platformName() ? `${this.platformName()}'s` : 'your';
-    return `Checked as a master against ${where} ${num(this.target(), 0)} LUFS target and true-peak ceiling.`;
+    return `MixLens checked this as a master against ${where} ${num(this.target(), 0)} LUFS target and true-peak ceiling.`;
   });
 
   /** One-line answer to "is this ready, and what do I fix first?", from the findings. */

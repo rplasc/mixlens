@@ -1,6 +1,7 @@
-import { Component, ElementRef, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
+import { Component, computed, inject, input } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { BandChart } from './band-chart';
+import { hostWidth } from './dom';
 import { clock, hz, num, signed } from './fmt';
 import { LoudnessBridge } from './loudness-bridge';
 import { Store } from './store';
@@ -18,21 +19,12 @@ import { Store } from './store';
   `,
   styles: `:host { display: block; width: 100%; } svg { display: block; } .axis { fill: var(--faint); font-size: var(--text-caption); }`,
 })
-export class DiffStrip implements OnInit, OnDestroy {
+export class DiffStrip {
   readonly windows = input.required<number[]>();
   readonly windowS = input(2);
   readonly duration = input(1);
   readonly left = 34;
-  private readonly el = inject(ElementRef<HTMLElement>);
-  private ro?: ResizeObserver;
-  readonly w = signal(900);
-  ngOnInit() {
-    this.ro = new ResizeObserver((e) => this.w.set(Math.max(300, Math.floor(e[0].contentRect.width))));
-    this.ro.observe(this.el.nativeElement);
-  }
-  ngOnDestroy() {
-    this.ro?.disconnect();
-  }
+  readonly w = hostWidth(900, 300);
   readonly cells = computed(() => {
     const span = Math.max(this.duration(), this.windows().length * this.windowS());
     const px = (t: number) => this.left + (t / span) * (this.w() - this.left);
@@ -75,7 +67,7 @@ export class DiffStrip implements OnInit, OnDestroy {
     @if (!store.otherVersions().length) {
       <div class="first">
         <h2>Nothing to compare yet</h2>
-        <p class="muted">Add another bounce of this song to see exactly what changed, second by second. Or add a finished reference track to match its level and tonal balance.</p>
+        <p class="muted">Add another bounce of this song to see what changed, second by second, or add a finished reference track to compare level and tonal balance against.</p>
         <div class="first-actions">
           <button class="primary" (click)="store.pickFiles()">Add files</button>
           <button (click)="store.pickFiles('reference')">Add reference</button>
@@ -136,10 +128,10 @@ export class DiffStrip implements OnInit, OnDestroy {
         </div>
         @if (refReport(); as rr) {
           <ml-loudness-bridge [values]="cur()!.loudness.short_term" [compareValues]="rr.loudness.short_term"
-            [hop]="cur()!.loudness.short_term_hop_s" [sections]="cur()!.sections" [duration]="cur()!.file.duration_s" />
+            [hop]="cur()!.loudness.short_term_hop_s" [sections]="cur()!.sections" [duration]="span()" />
         }
-        <ml-diff-strip [windows]="c.windows" [windowS]="c.window_s" [duration]="cur()?.file?.duration_s ?? 1" />
-        <p class="faint small">Grey: identical. Blue: small differences (often time-varying plugins). Orange and red: changed audio.</p>
+        <ml-diff-strip [windows]="c.windows" [windowS]="c.window_s" [duration]="span()" />
+        <p class="faint small">Gray: identical. Blue: small differences (often time-varying plugins). Orange and red: changed audio.</p>
       </section>
 
       <div class="cols">
@@ -187,11 +179,11 @@ export class DiffStrip implements OnInit, OnDestroy {
       @if (c.changed_regions.length) {
         <section>
           <h2>Changed regions</h2>
-          <p class="muted small">Energy change per octave band (column = band's lower edge, Hz).</p>
+          <p class="muted small">Change in energy per octave band. Each column is named by its band's lower edge, in Hz.</p>
           <table class="data regions">
             <thead>
               <tr><th>Range</th><th class="n">Loudness</th>
-                @for (b of octaveLabels; track b) { <th class="n oct">{{ b }}</th> }
+                @for (b of octaveLabels(); track b) { <th class="n oct">{{ b }}</th> }
               </tr>
             </thead>
             <tbody>
@@ -235,8 +227,9 @@ export class Compare {
   readonly signed = signed;
   readonly clock = clock;
   readonly abs = Math.abs;
-  readonly octaveLabels = ['20', '40', '80', '160', '320', '640', '1.3k', '2.5k', '5k', '8k', '12k', '16k'];
   readonly c = computed(() => this.store.comparison());
+  /** Each band's lower edge; the backend sends bands as "lo-hi". */
+  readonly octaveLabels = computed(() => (this.c()?.octave_bands ?? []).map((b) => hz(Number(b.split('-')[0]))));
   readonly rc = computed(() => this.store.refComparison());
   readonly hz = hz;
   readonly bounces = computed(() => this.store.otherVersions().filter((v) => v.kind !== 'reference'));
@@ -268,6 +261,8 @@ export class Compare {
   readonly cur = computed(() => this.store.report()?.report ?? null);
   readonly ref = computed(() => this.store.compareReport());
   readonly refReport = computed(() => this.store.compareReport()?.report ?? null);
+  /** Shared time axis for the timeline and diff strip: the longer of the two versions. */
+  readonly span = computed(() => Math.max(this.cur()?.file.duration_s ?? 0, this.refReport()?.file.duration_s ?? 0, 1));
   readonly curBands = computed(() => (this.c()?.third_octave_delta ?? []).map((d) => ({ fc: d.fc, level_db: 0, dev_db: d.dev_b })));
   readonly refBands = computed(() => (this.c()?.third_octave_delta ?? []).map((d) => ({ fc: d.fc, level_db: 0, dev_db: d.dev_a })));
 

@@ -70,6 +70,9 @@ export class Store {
   /** The song list drawer, used only when the window is too narrow for the sidebar. */
   readonly navOpen = signal(false);
 
+  /** Counts compare runs, so a result that arrives late can tell it was superseded. */
+  private compareRun = 0;
+
   readonly project = computed(() => this.projects().find((p) => p.id === this.projectId()) ?? null);
   readonly version = computed(() => this.versions().find((v) => v.id === this.versionId()) ?? null);
   readonly otherVersions = computed(() => this.versions().filter((v) => v.id !== this.versionId()));
@@ -115,10 +118,12 @@ export class Store {
 
   async init() {
     try {
-      this.settings.set(await api.getSettings());
-      this.presets.set(await api.listGenrePresets());
-      this.platforms.set(await api.listPlatforms());
-      const projects = await api.listProjects();
+      const [settings, presets, platforms, projects] = await Promise.all([
+        api.getSettings(), api.listGenrePresets(), api.listPlatforms(), api.listProjects(),
+      ]);
+      this.settings.set(settings);
+      this.presets.set(presets);
+      this.platforms.set(platforms);
       this.projects.set(projects);
       if (projects.length) await this.selectProject(projects[0].id);
     } catch (e) {
@@ -163,13 +168,6 @@ export class Store {
     }
   }
 
-  async renameProject(name: string) {
-    const id = this.projectId();
-    if (id == null || !name.trim()) return;
-    await api.renameProject(id, name);
-    await this.refreshProjects();
-  }
-
   async deleteProject() {
     const id = this.projectId();
     if (id == null) return;
@@ -196,6 +194,7 @@ export class Store {
     this.resetDerived();
     try {
       const [versions, chat] = await Promise.all([api.listVersions(id), api.getChat(id)]);
+      if (this.projectId() !== id) return;
       this.versions.set(versions);
       this.chat.set(chat);
       const last = versions.filter((v) => v.kind !== 'reference').at(-1) ?? versions.at(-1);
@@ -212,7 +211,7 @@ export class Store {
     try {
       const next = await api.updateVersionContext(v.id, genre, key);
       this.versions.update((list) => list.map((x) => (x.id === v.id ? next : x)));
-      this.report.set(await api.getReport(v.id));
+      await this.reloadReport(v.id);
     } catch (e) {
       this.fail(e);
     }
@@ -225,9 +224,10 @@ export class Store {
       await api.updateProjectContext(pid, genre, key);
       const [projects, versions] = await Promise.all([api.listProjects(), api.listVersions(pid)]);
       this.projects.set(projects);
+      if (this.projectId() !== pid) return;
       this.versions.set(versions);
       const id = this.versionId();
-      if (id != null) this.report.set(await api.getReport(id));
+      if (id != null) await this.reloadReport(id);
     } catch (e) {
       this.fail(e);
     }
@@ -235,7 +235,18 @@ export class Store {
 
   // ---------- versions ----------
 
+  /** Reload a version's report after its type or context changed, and the comparison showing it. */
+  private async reloadReport(id: number) {
+    const report = await api.getReport(id);
+    if (this.versionId() !== id) return;
+    this.report.set(report);
+    if (this.comparison() || this.refComparison()) await this.runCompare();
+  }
+
   private resetDerived() {
+    // A compare still running belongs to the old selection.
+    this.compareRun++;
+    this.comparing.set(false);
     this.comparison.set(null);
     this.refComparison.set(null);
     this.codec.set(null);
@@ -256,7 +267,9 @@ export class Store {
     const partner = list[idx]?.kind === 'reference' ? bounces.at(-1) : prev ?? bounces[0];
     this.compareWith.set((partner ?? others[0])?.id ?? null);
     try {
-      this.report.set(await api.getReport(id));
+      const report = await api.getReport(id);
+      if (this.versionId() !== id) return;
+      this.report.set(report);
       if (this.tab() === 'compare') await this.runCompare();
       if (this.tab() === 'streaming') await this.loadStreaming();
     } catch (e) {
@@ -284,9 +297,14 @@ export class Store {
     let pid = this.projectId();
     if (pid == null) {
       const name = audio[0].split(/[\\/]/).pop()!.replace(/\.[^.]+$/, '').replace(/[_-](mix|master|v\d+|final).*$/i, '');
-      const p = await api.createProject(name || 'New project');
-      await this.refreshProjects();
-      pid = p.id;
+      try {
+        const p = await api.createProject(name || 'New song');
+        await this.refreshProjects();
+        pid = p.id;
+      } catch (e) {
+        this.fail(e);
+        return;
+      }
       this.projectId.set(pid);
       this.versions.set([]);
       this.chat.set([]);
@@ -297,7 +315,8 @@ export class Store {
       this.analyzing.update((a) => [...a, name]);
       try {
         const v = await api.addVersion(pid, path, kind);
-        this.versions.update((list) => [...list, v]);
+        // The person may have opened another song while this one analyzed.
+        if (this.projectId() === pid) this.versions.update((list) => [...list, v]);
         lastId = v.id;
       } catch (e) {
         this.fail(`${name}: ${errorText(e)}`);
@@ -305,8 +324,12 @@ export class Store {
         this.analyzing.update((a) => a.filter((x) => x !== name));
       }
     }
-    await this.refreshProjects();
-    if (lastId == null) return;
+    try {
+      await this.refreshProjects();
+    } catch (e) {
+      this.fail(e);
+    }
+    if (lastId == null || this.projectId() !== pid) return;
     if (kind === 'reference' && this.versionId() != null) {
       // Keep the current bounce in view and compare it with the new reference.
       this.compareWith.set(lastId);
@@ -323,7 +346,7 @@ export class Store {
     try {
       const v = await api.updateVersion(id, label, kind);
       this.versions.update((list) => list.map((x) => (x.id === id ? v : x)));
-      this.report.set(await api.getReport(id));
+      await this.reloadReport(id);
       if (this.streaming()) await this.loadStreaming();
     } catch (e) {
       this.fail(e);
@@ -333,14 +356,18 @@ export class Store {
   async deleteVersion() {
     const id = this.versionId();
     if (id == null) return;
-    await api.deleteVersion(id);
-    const list = this.versions().filter((v) => v.id !== id);
-    this.versions.set(list);
-    this.versionId.set(null);
-    this.report.set(null);
-    await this.refreshProjects();
-    const last = list[list.length - 1];
-    if (last) await this.selectVersion(last.id);
+    try {
+      await api.deleteVersion(id);
+      const list = this.versions().filter((v) => v.id !== id);
+      this.versions.set(list);
+      this.versionId.set(null);
+      this.report.set(null);
+      await this.refreshProjects();
+      const last = list.at(-1);
+      if (last) await this.selectVersion(last.id);
+    } catch (e) {
+      this.fail(e);
+    }
   }
 
   /** Open the Compare tab against a reference track. */
@@ -356,23 +383,27 @@ export class Store {
     const a = this.compareWith();
     const b = this.versionId();
     if (a == null || b == null) return;
+    // Only the latest run may show its result or end the busy state.
+    const run = ++this.compareRun;
     this.comparing.set(true);
     this.comparison.set(null);
     this.refComparison.set(null);
     try {
       if (this.comparingReference()) {
         const [c, ref] = await Promise.all([api.compareReference(b, a), api.getReport(a)]);
+        if (run !== this.compareRun) return;
         this.compareReport.set(ref);
         this.refComparison.set(c);
       } else {
         const [c, ref] = await Promise.all([api.compare(a, b), api.getReport(a)]);
+        if (run !== this.compareRun) return;
         this.compareReport.set(ref);
         this.comparison.set(c);
       }
     } catch (e) {
-      this.fail(e);
+      if (run === this.compareRun) this.fail(e);
     } finally {
-      this.comparing.set(false);
+      if (run === this.compareRun) this.comparing.set(false);
     }
   }
 
@@ -381,7 +412,9 @@ export class Store {
     if (id == null) return;
     this.codecBusy.set(true);
     try {
-      this.codec.set(await api.codecCheck(id));
+      const codec = await api.codecCheck(id);
+      if (this.versionId() !== id) return;
+      this.codec.set(codec);
       await this.loadStreaming();
     } catch (e) {
       this.fail(e);
@@ -395,7 +428,8 @@ export class Store {
     const id = this.versionId();
     if (id == null) return;
     try {
-      this.streaming.set(await api.streamingReport(id));
+      const streaming = await api.streamingReport(id);
+      if (this.versionId() === id) this.streaming.set(streaming);
     } catch (e) {
       this.fail(e);
     }
@@ -412,7 +446,8 @@ export class Store {
     }
     this.sectionIndex.set(i);
     try {
-      this.section.set(await api.section(id, s.start_s, s.end_s));
+      const section = await api.section(id, s.start_s, s.end_s);
+      if (this.versionId() === id && this.sectionIndex() === i) this.section.set(section);
     } catch (e) {
       this.fail(e);
     }
@@ -430,9 +465,13 @@ export class Store {
     const focus = [this.versionId(), this.tab() === 'compare' ? this.compareWith() : null].filter((x): x is number => x != null);
     try {
       await api.chat(pid, text.trim(), focus);
-      this.chat.set(await api.getChat(pid));
+      const chat = await api.getChat(pid);
+      // Another song may be open now; its chat stays as it is.
+      if (this.projectId() === pid) this.chat.set(chat);
     } catch (e) {
-      this.chat.update((c) => [...c, { id: -Date.now(), role: 'assistant', content: `**Couldn't get an answer.** ${errorText(e)}`, created_at: '' }]);
+      if (this.projectId() === pid) {
+        this.chat.update((c) => [...c, { id: -Date.now(), role: 'assistant', content: `**Couldn't get an answer.** ${errorText(e)}`, created_at: '' }]);
+      }
     } finally {
       this.chatBusy.set(false);
       this.activity.set(null);
@@ -442,7 +481,11 @@ export class Store {
   async clearChat() {
     const pid = this.projectId();
     if (pid == null) return;
-    await api.clearChat(pid);
-    this.chat.set([]);
+    try {
+      await api.clearChat(pid);
+      if (this.projectId() === pid) this.chat.set([]);
+    } catch (e) {
+      this.fail(e);
+    }
   }
 }

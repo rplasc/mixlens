@@ -1,5 +1,6 @@
-import { Component, ElementRef, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, input } from '@angular/core';
 import { Finding, PlatformResult } from './api';
+import { hostWidth } from './dom';
 import { num, signed } from './fmt';
 import { Sev } from './severity';
 import { Store } from './store';
@@ -50,22 +51,12 @@ import { Store } from './store';
     .hatch { stroke: var(--muted); stroke-width: 1.5; }
   `,
 })
-export class GainChart implements OnInit, OnDestroy {
+export class GainChart {
   readonly rows = input.required<PlatformResult[]>();
   readonly labelW = 110;
   readonly valueW = 132;
   readonly rowH = 26;
-  private readonly el = inject(ElementRef<HTMLElement>);
-  private ro?: ResizeObserver;
-  readonly w = signal(700);
-
-  ngOnInit() {
-    this.ro = new ResizeObserver((e) => this.w.set(Math.max(360, Math.floor(e[0].contentRect.width))));
-    this.ro.observe(this.el.nativeElement);
-  }
-  ngOnDestroy() {
-    this.ro?.disconnect();
-  }
+  readonly w = hostWidth(700, 360);
 
   readonly plotH = computed(() => this.rows().length * this.rowH);
   readonly height = computed(() => this.plotH() + 20);
@@ -129,7 +120,7 @@ export class GainChart implements OnInit, OnDestroy {
             <span><i class="sw miss"></i>Needed but not applied</span>
           </div>
         </div>
-        <p class="muted lead">How far each platform changes the volume to match its loudness target, with default listening settings. A hatched bar is the boost the platform won't give: it either never turns tracks up, or would push peaks past its ceiling.</p>
+        <p class="muted lead">Each bar shows how far a platform turns this track up or down to reach its loudness target, at default listening settings. A hatched bar is a boost the platform won't apply, either because it never turns tracks up or because the boost would push peaks past its ceiling.</p>
         <ml-gain-chart [rows]="s.platforms" />
       </section>
 
@@ -150,7 +141,7 @@ export class GainChart implements OnInit, OnDestroy {
               {{ store.codecBusy() ? 'Encoding…' : store.codec() ? 'Run again' : 'Run check' }}
             </button>
           </div>
-          <p class="muted">Encodes to the formats platforms stream (Ogg, AAC, Opus, MP3) with ffmpeg and measures the peaks listeners actually get. The platform cards below use these results.</p>
+          <p class="muted">This check uses ffmpeg to encode the track to the formats platforms stream (Ogg, AAC, Opus, MP3), then measures the peaks listeners hear. The platform cards below use the results.</p>
           @if (store.codec(); as rows) {
             <table class="data">
               <thead><tr><th>Encode</th><th class="n">True peak</th><th class="n">Loudness</th></tr></thead>
@@ -286,7 +277,7 @@ export class Streaming implements OnInit {
     const s = this.s();
     if (!s) return '';
     const ok = s.platforms.filter((p) => p.status === 'ok' || p.status === 'info');
-    const lead = s.kind === 'mix' ? 'If released as it is, this mix would meet' : s.kind === 'reference' ? 'This reference meets' : 'Meets';
+    const lead = s.kind === 'mix' ? 'If released as it is, this mix would meet' : s.kind === 'reference' ? 'This reference meets' : 'This master meets';
     let text = `${lead} the requirements of ${ok.length} of ${s.platforms.length} platforms.`;
     if (s.general.some((f) => f.severity === 'error')) text += ' It clips, so fix that before anything else.';
     const main = s.platforms.find((p) => p.id === this.mainId());

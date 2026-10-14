@@ -1,5 +1,6 @@
-import { Component, ElementRef, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
+import { Component, computed, input } from '@angular/core';
 import { BandDev } from './api';
+import { hostWidth } from './dom';
 import { hz, signed } from './fmt';
 
 /** Third-octave deviation from the fitted tilt: bumps up, dips down. Optional B overlay. */
@@ -36,7 +37,7 @@ import { hz, signed } from './fmt';
     .bar.b { fill: var(--b); opacity: 0.85; }
   `,
 })
-export class BandChart implements OnInit, OnDestroy {
+export class BandChart {
   readonly a = input.required<BandDev[]>();
   readonly b = input<BandDev[] | null>(null);
   readonly height = input(200);
@@ -44,17 +45,7 @@ export class BandChart implements OnInit, OnDestroy {
   readonly flagAbove = input(3.5);
 
   readonly left = 34;
-  private readonly el = inject(ElementRef<HTMLElement>);
-  private ro?: ResizeObserver;
-  readonly w = signal(700);
-
-  ngOnInit() {
-    this.ro = new ResizeObserver((e) => this.w.set(Math.max(280, Math.floor(e[0].contentRect.width))));
-    this.ro.observe(this.el.nativeElement);
-  }
-  ngOnDestroy() {
-    this.ro?.disconnect();
-  }
+  readonly w = hostWidth(700, 280);
 
   private readonly bands = computed(() => this.a().filter((x) => x.fc >= 30));
   private readonly lim = 9;

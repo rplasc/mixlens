@@ -39,14 +39,14 @@ import { Store } from './store';
               <input type="number" step="0.5" [(ngModel)]="f.target_lufs" (change)="persist()" class="short" />
             </label>
           }
-          <p class="hint">Masters are checked against this platform's loudness target and true-peak ceiling. The Streaming tab shows every platform.</p>
+          <p class="hint">MixLens checks masters against this platform's loudness target and true-peak ceiling. The Streaming tab shows all of them.</p>
           <label class="field">
             <span>ffmpeg (used by the encode check)</span>
             <input [(ngModel)]="f.ffmpeg_path" (change)="persist()" placeholder="Leave empty to find ffmpeg automatically" />
           </label>
           <p class="hint" [class.ok]="store.settings()?.ffmpeg_found" [class.err]="!store.settings()?.ffmpeg_found">
             {{ store.settings()?.ffmpeg_found ? 'ffmpeg found. The encode check on the Streaming tab is ready.'
-              : 'ffmpeg not found, so the encode check is unavailable. Install it with "winget install Gyan.FFmpeg" and restart MixLens, or enter the full path to ffmpeg.exe above.' }}
+              : 'MixLens can\\'t find ffmpeg, so the encode check won\\'t run. Install it with "winget install Gyan.FFmpeg" and restart MixLens, or enter the full path to ffmpeg.exe above.' }}
           </p>
         </section>
 
@@ -168,7 +168,7 @@ export class Settings implements OnInit, AfterViewInit {
     switch (this.form()?.provider) {
       case 'anthropic': return 'Your questions and MixLens\'s measurements go to Anthropic. Your audio never leaves this computer.';
       case 'openai': return 'Your questions and MixLens\'s measurements go to OpenAI. Your audio never leaves this computer.';
-      default: return 'Runs on this computer with Ollama, so nothing leaves your machine.';
+      default: return 'Ollama runs the assistant on this computer, so nothing is sent anywhere.';
     }
   });
 
@@ -237,6 +237,7 @@ export class Settings implements OnInit, AfterViewInit {
     this.form.set({ ...f, provider: p });
     this.models.set([]);
     this.modelsError.set(null);
+    this.typingModel.set(false);
     this.keyDraft = '';
     await this.persist();
   }
@@ -244,8 +245,12 @@ export class Settings implements OnInit, AfterViewInit {
   async persist() {
     const f = this.form();
     if (!f) return;
+    // A cleared number field reads as null, which Number() would turn into 0 LUFS: keep the saved target.
+    const typed = f.target_lufs as number | string | null;
+    const valid = typed != null && typed !== '' && isFinite(Number(typed));
+    const target_lufs = valid ? Number(typed) : (this.store.settings()?.target_lufs ?? -14);
     try {
-      this.store.settings.set(await api.saveSettings({ ...f, target_lufs: Number(f.target_lufs) }));
+      this.store.settings.set(await api.saveSettings({ ...f, target_lufs }));
       this.flash('Saved');
     } catch (e) {
       this.store.fail(e);
@@ -268,8 +273,12 @@ export class Settings implements OnInit, AfterViewInit {
   async removeKey() {
     const f = this.form();
     if (!f || f.provider === 'ollama') return;
-    this.store.settings.set(await api.setApiKey(f.provider, ''));
-    this.flash('Key removed');
+    try {
+      this.store.settings.set(await api.setApiKey(f.provider, ''));
+      this.flash('Key removed');
+    } catch (e) {
+      this.store.fail(e);
+    }
   }
 
   async loadModels() {
@@ -279,6 +288,8 @@ export class Settings implements OnInit, AfterViewInit {
     this.modelsError.set(null);
     try {
       const list = await api.listModels(f.provider);
+      // The provider may have changed while the list loaded.
+      if (this.form()?.provider !== f.provider) return;
       this.models.set(list);
       this.typingModel.set(false);
       if (!this.model() && list.length) {
@@ -286,6 +297,7 @@ export class Settings implements OnInit, AfterViewInit {
         await this.persist();
       }
     } catch (e) {
+      if (this.form()?.provider !== f.provider) return;
       this.modelsError.set(
         f.provider === 'ollama' ? `Couldn't reach Ollama at ${f.ollama_url}. Start Ollama and try again.` : `Couldn't load models: ${errorText(e)}`,
       );
@@ -294,9 +306,11 @@ export class Settings implements OnInit, AfterViewInit {
     }
   }
 
+  private flashTimer?: ReturnType<typeof setTimeout>;
   private flash(text: string) {
+    clearTimeout(this.flashTimer);
     this.saved.set(text);
-    setTimeout(() => this.saved.set(null), 1600);
+    this.flashTimer = setTimeout(() => this.saved.set(null), 1600);
   }
 
   ngAfterViewInit() {

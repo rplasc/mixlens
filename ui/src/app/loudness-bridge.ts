@@ -1,5 +1,6 @@
-import { Component, ElementRef, OnDestroy, OnInit, computed, inject, input, output, signal } from '@angular/core';
+import { Component, computed, input, output, signal } from '@angular/core';
 import { Section } from './api';
+import { hostWidth } from './dom';
 import { clock, num } from './fmt';
 
 interface Series { values: number[]; hop: number; color: 'a' | 'b' }
@@ -9,7 +10,7 @@ interface Series { values: number[]; hop: number; color: 'a' | 'b' }
   selector: 'ml-loudness-bridge',
   template: `
     <svg [attr.width]="w()" [attr.height]="H" (mousemove)="move($event)" (mouseleave)="hover.set(null)" [attr.role]="clickable() ? 'group' : 'img'"
-         [attr.aria-label]="'Short-term loudness over time. Integrated ' + num(integrated()) + ' LUFS'">
+         [attr.aria-label]="ariaLabel()">
       @for (s of sectionRects(); track $index) {
         <g class="sec" [class.selected]="selected() === $index" [class.clickable]="clickable()" (click)="pick($index)"
            [attr.tabindex]="s.focusable ? 0 : null" [attr.role]="s.focusable ? 'button' : null"
@@ -86,7 +87,7 @@ interface Series { values: number[]; hop: number; color: 'a' | 'b' }
     .tip-v.b { fill: var(--b); }
   `,
 })
-export class LoudnessBridge implements OnInit, OnDestroy {
+export class LoudnessBridge {
   readonly values = input.required<number[]>();
   readonly hop = input<number>(0.5);
   readonly compareValues = input<number[] | null>(null);
@@ -110,18 +111,13 @@ export class LoudnessBridge implements OnInit, OnDestroy {
   readonly left = 34;
   readonly num = num;
 
-  private readonly el = inject(ElementRef<HTMLElement>);
-  private ro?: ResizeObserver;
-  readonly w = signal(900);
+  readonly w = hostWidth(900, 300);
   readonly hover = signal<{ x: number; time: string; a: string; b: string | null } | null>(null);
-
-  ngOnInit() {
-    this.ro = new ResizeObserver((e) => this.w.set(Math.max(300, Math.floor(e[0].contentRect.width))));
-    this.ro.observe(this.el.nativeElement);
-  }
-  ngOnDestroy() {
-    this.ro?.disconnect();
-  }
+  /** The Compare tab has no integrated line, so its label leaves the value out. */
+  readonly ariaLabel = computed(() => {
+    const i = this.integrated();
+    return 'Short-term loudness over time' + (i === null ? '' : `. Integrated ${num(i)} LUFS`);
+  });
 
   private readonly range = computed(() => {
     const all = [...this.values(), ...(this.compareValues() ?? [])].filter((v) => v > -100);

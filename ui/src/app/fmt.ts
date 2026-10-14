@@ -1,7 +1,9 @@
 export function time(s: number): string {
   if (!isFinite(s)) return '–';
-  const m = Math.floor(s / 60);
-  const sec = s - m * 60;
+  // Round first so 119.97 s reads 2:00, not 1:60.0.
+  const t = Math.round(s * 10) / 10;
+  const m = Math.floor(t / 60);
+  const sec = Math.round((t - m * 60) * 10) / 10;
   return `${m}:${sec < 10 ? '0' : ''}${sec.toFixed(sec % 1 === 0 ? 0 : 1)}`;
 }
 

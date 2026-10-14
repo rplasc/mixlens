@@ -3,6 +3,7 @@ import { NgTemplateOutlet } from '@angular/common';
 import { Kind, MusicalKey } from './api';
 import { Assistant } from './assistant';
 import { Compare } from './compare';
+import { Autofocus } from './dom';
 import { format, keyName, time, TONICS } from './fmt';
 import { Overview } from './overview';
 import { Settings } from './settings';
@@ -17,7 +18,7 @@ const WIDE = '(min-width: 1000px)';
 
 @Component({
   selector: 'app-root',
-  imports: [NgTemplateOutlet, Sidebar, Overview, Spectrum, Stereo, Streaming, Compare, Assistant, Settings],
+  imports: [NgTemplateOutlet, Autofocus, Sidebar, Overview, Spectrum, Stereo, Streaming, Compare, Assistant, Settings],
   host: { '(document:keydown.escape)': 'closeOverlays()' },
   template: `
     <div class="shell" [class.chat-closed]="!store.chatOpen()" [class.nav-open]="store.navOpen()">
@@ -46,7 +47,7 @@ const WIDE = '(min-width: 1000px)';
             <div class="name">
               @if (editing()) {
                 <form (submit)="saveLabel($event, labelBox.value)">
-                  <input #labelBox aria-label="Version name" [value]="v.label" (blur)="saveLabel($event, labelBox.value)" (keydown.escape)="editing.set(false)" autofocus />
+                  <input #labelBox aria-label="Version name" [value]="v.label" (blur)="saveLabel($event, labelBox.value)" (keydown.escape)="editing.set(false)" mlAutofocus />
                 </form>
               } @else {
                 <h1 (dblclick)="editing.set(true)">{{ v.label }}</h1>
@@ -108,18 +109,18 @@ const WIDE = '(min-width: 1000px)';
           <div class="empty">
             @if (store.analyzing().length) {
               <h1>Analyzing {{ store.analyzing()[0] }}</h1>
-              <p class="muted">Loudness, peaks, stereo, spectrum and edges, usually in a second or two.</p>
+              <p class="muted">Measuring loudness, peaks, stereo and tone. This usually takes a second or two.</p>
             } @else {
               <h1>Drop a mix or master here</h1>
-              <p class="muted">WAV, FLAC, AIFF, MP3 or M4A. Analysis takes about a second and runs on this computer.</p>
+              <p class="muted">WAV, FLAC, AIFF, MP3 or M4A. MixLens analyzes each file on this computer in a second or two.</p>
               <button class="primary" (click)="store.pickFiles()">Choose files</button>
               <ul class="gets" aria-label="What MixLens checks">
                 <li>What to fix first, before release or mastering</li>
                 <li>Loudness and peaks against your streaming target</li>
-                <li>Stereo, tone and file-edge checks</li>
+                <li>Stereo, tone and how the file starts and ends</li>
                 <li>What changed between two bounces, second by second</li>
               </ul>
-              <p class="naming">Files with "master" in the name are checked as masters, and "ref" as reference tracks. You can change this after.</p>
+              <p class="naming">MixLens checks files with "master" in the name as masters and treats "ref" files as references. You can change either one later.</p>
             }
           </div>
         }
@@ -212,7 +213,6 @@ const WIDE = '(min-width: 1000px)';
 export class App implements OnInit {
   readonly store = inject(Store);
   readonly editing = signal(false);
-  readonly time = time;
   readonly tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'spectrum', label: 'Tone' },
@@ -244,17 +244,12 @@ export class App implements OnInit {
     if (k) void this.store.setContext(this.store.context().genre, { ...k, mode: mode === 'minor' ? 'minor' : 'major' });
   }
 
-  readonly fmtFormat = computed(() => {
-    const v = this.store.version();
-    return v ? format(v.sample_format, v.sample_rate) : '';
-  });
-
   /** File details under the title; the file name only when the label isn't already it. */
   readonly fileLine = computed(() => {
     const v = this.store.version();
     if (!v) return '';
     const sameName = v.label === v.file_name.replace(/\.[^.]+$/, '');
-    return [sameName ? null : v.file_name, this.fmtFormat(), time(v.duration_s)].filter(Boolean).join(', ');
+    return [sameName ? null : v.file_name, format(v.sample_format, v.sample_rate), time(v.duration_s)].filter(Boolean).join(', ');
   });
 
   ngOnInit() {
@@ -269,6 +264,8 @@ export class App implements OnInit {
 
   /** Close whatever is overlaying the main column: the song drawer, or the assistant when it's a drawer. */
   closeOverlays() {
+    // Escape in Settings closes only the dialog, which handles it itself.
+    if (this.store.showSettings()) return;
     if (this.store.navOpen()) {
       this.store.navOpen.set(false);
       document.querySelector<HTMLElement>('.nav-toggle')?.focus();

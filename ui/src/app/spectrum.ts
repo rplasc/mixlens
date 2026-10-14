@@ -17,7 +17,7 @@ const ROLE_LABELS: Record<KeyRole, string> = {
       <ml-readings [items]="readings()" />
       <section>
         <h2>Balance against the overall tilt</h2>
-        <p class="muted lead">Each bar is a third-octave band's distance from the song's fitted slope. Bumps above about 3.5 dB between 150 Hz and 6 kHz are highlighted.</p>
+        <p class="muted lead">Each bar is a third-octave band's distance from the song's fitted slope. Bumps over about 3.5 dB between 150 Hz and 6 kHz show in orange.</p>
         <ml-band-chart [a]="r.spectrum.third_octave" [height]="260" />
       </section>
 
@@ -25,7 +25,7 @@ const ROLE_LABELS: Record<KeyRole, string> = {
         <section>
           <h2>Energy by octave</h2>
           @if (genre(); as g) {
-            <p class="muted lead">Against a typical {{ g.preset_name }} balance. Targets are rough starting points; a reference track is a better guide.</p>
+            <p class="muted lead">Compared with a typical {{ g.preset_name }} balance. These are rough starting points, and a reference track is a better guide.</p>
           }
           <table class="data">
             <thead><tr><th>Band</th><th class="n">Share of total</th>
@@ -67,7 +67,7 @@ const ROLE_LABELS: Record<KeyRole, string> = {
         <section>
           <h2>Low-frequency peaks</h2>
           @if (key(); as k) {
-            <p class="muted lead">Narrow peaks between 30 and 300 Hz, read in {{ k.key_name }}. Peaks on notes of the key are the bassline or chords; peaks out of key or between notes are likely resonances worth a narrow cut.</p>
+            <p class="muted lead">Narrow peaks between 30 and 300 Hz, read in {{ k.key_name }}. Peaks on notes in the key are usually the bassline or chords. Peaks out of key or between notes are more likely resonances worth a narrow cut.</p>
             <table class="data">
               <thead><tr><th>Frequency</th><th>Note</th><th>In {{ k.key_name }}</th><th class="n">Cents</th><th class="n">Above median</th></tr></thead>
               <tbody>
@@ -86,7 +86,7 @@ const ROLE_LABELS: Record<KeyRole, string> = {
             </table>
 
             <h2 class="sub">Bass notes in {{ k.key_name }}</h2>
-            <p class="muted lead">Root and fifth frequencies{{ tuned() ? ', adjusted for the song’s tuning' : '' }}. Boosts here reinforce the key; cut candidates are the out-of-key peaks above.</p>
+            <p class="muted lead">Root and fifth frequencies{{ tuned() ? ', adjusted for the song\\'s tuning' : '' }}. Boosting here reinforces the key. To cut, start with the out-of-key peaks above.</p>
             <ul class="chips">
               @for (f of k.safe_freqs; track f.hz) {
                 <li [class.root]="f.role === 'root'"><strong>{{ f.note }}</strong> {{ num(f.hz) }} Hz <span class="faint">{{ f.role }}</span></li>

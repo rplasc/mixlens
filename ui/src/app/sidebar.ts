@@ -1,12 +1,13 @@
 import { Component, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
+import { Autofocus } from './dom';
 import { keyName, num } from './fmt';
 import { Sev } from './severity';
 import { Store } from './store';
 
 @Component({
   selector: 'ml-sidebar',
-  imports: [NgTemplateOutlet, Sev],
+  imports: [NgTemplateOutlet, Autofocus, Sev],
   template: `
     <div class="brand">
       <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
@@ -23,7 +24,7 @@ import { Store } from './store';
       </div>
       @if (creating()) {
         <form (submit)="create($event, nameBox.value)">
-          <input #nameBox aria-label="Song name" placeholder="Song name" (keydown.escape)="creating.set(false)" autofocus />
+          <input #nameBox aria-label="Song name" placeholder="Song name" (keydown.escape)="creating.set(false)" mlAutofocus />
         </form>
       }
       <ul class="projects">
@@ -96,7 +97,7 @@ import { Store } from './store';
             </li>
             <ng-container *ngTemplateOutlet="removeConfirm; context: { $implicit: v }" />
           } @empty {
-            <li class="muted empty">A finished track you'd like this song to sit next to. Not checked for problems; used for comparisons.</li>
+            <li class="muted empty">Add a finished track you want this song to sit alongside. MixLens uses it for comparisons and doesn't check it for problems.</li>
           }
         </ul>
       </section>
