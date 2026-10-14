@@ -44,7 +44,7 @@ import { Store } from './store';
           <button class="ghost small" (click)="store.pickFiles()">Add files</button>
         </div>
         <ul>
-          @for (v of store.versions(); track v.id) {
+          @for (v of store.mixVersions(); track v.id) {
             <li>
               <button class="item version" [class.on]="v.id === store.versionId()" (click)="store.selectVersion(v.id)">
                 <span class="status" [attr.data-sev]="v.worst" [attr.title]="v.errors + ' errors, ' + v.warnings + ' warnings'"></span>
@@ -58,9 +58,28 @@ import { Store } from './store';
             <li class="analyzing"><span class="spin"></span>Analyzing {{ a }}</li>
           }
         </ul>
-        @if (!store.versions().length && !store.analyzing().length) {
+        @if (!store.mixVersions().length && !store.analyzing().length) {
           <p class="muted empty">Add a bounce of this song to analyze it. You can also drop files onto the window.</p>
         }
+
+        <div class="head refs-head">
+          <h3>References</h3>
+          <button class="ghost small" (click)="store.pickFiles('reference')">Add reference</button>
+        </div>
+        <ul>
+          @for (v of store.references(); track v.id) {
+            <li>
+              <button class="item version" [class.on]="v.id === store.versionId()" (click)="store.selectVersion(v.id)">
+                <span class="status ref" aria-hidden="true"></span>
+                <span class="label">{{ v.label }}</span>
+                <span class="kind ref">ref</span>
+                <span class="meta">{{ num(v.integrated_lufs) }} LUFS, {{ num(v.true_peak_dbtp) }} dBTP</span>
+              </button>
+            </li>
+          } @empty {
+            <li class="muted empty">A finished track you'd like this song to sit next to. Not checked for problems; used for comparisons.</li>
+          }
+        </ul>
       </section>
     }
 
@@ -88,6 +107,9 @@ import { Store } from './store';
     .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .kind { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; }
     .meta { grid-column: 2 / 4; font-size: 12px; color: var(--faint); }
+    .refs-head { margin-top: 14px; }
+    .status.ref { background: transparent; border: 1.5px solid var(--b); }
+    .kind.ref { color: var(--b); border-color: var(--b); }
     .analyzing { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: var(--muted); font-size: 13px; }
     .spin { width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--a); border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }

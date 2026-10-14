@@ -3,8 +3,8 @@
 use crate::ai;
 use crate::db::{self, Message, Project, VersionSummary};
 use crate::settings::{self, Provider, Settings, SettingsView};
-use crate::state::{err, Shared};
-use mixlens_core::{codec, compare, refresh_findings, tools, Kind};
+use crate::state::{self, err, Shared};
+use mixlens_core::{codec, compare, reference_compare, refresh_findings, tools, GenrePreset, Kind, MusicalKey};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -39,6 +39,41 @@ pub fn delete_project(state: State<'_, Shared>, id: i64) -> R<()> {
     db::delete_project(&state.db.lock().unwrap(), id).map_err(err)
 }
 
+/// Re-run the (cheap) rules for every version of a project with its current context.
+fn refresh_project(c: &rusqlite::Connection, project: &Project, settings: &Settings, presets: &[GenrePreset]) -> R<()> {
+    for mut v in db::list_versions(c, project.id).map_err(err)? {
+        refresh_findings(&mut v.report, &state::build_targets(settings, presets, Some(project), v.kind));
+        db::update_version(c, v.id, &v.label, v.kind, &v.report).map_err(err)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_genre_presets(state: State<'_, Shared>) -> R<Vec<GenrePreset>> {
+    Ok(state::load_presets(&state.db.lock().unwrap()))
+}
+
+/// Set a song's genre and key, then refresh every version's findings.
+#[tauri::command]
+pub async fn update_project_context(state: State<'_, Shared>, id: i64, genre: Option<String>, key: Option<MusicalKey>) -> R<Project> {
+    let s: Shared = state.inner().clone();
+    blocking(move || {
+        let c = s.db.lock().unwrap();
+        let presets = state::load_presets(&c);
+        let genre = genre.filter(|g| !g.is_empty());
+        if let Some(g) = &genre {
+            if !presets.iter().any(|p| &p.id == g) {
+                return Err(format!("unknown genre preset '{g}'"));
+            }
+        }
+        db::set_project_context(&c, id, genre.as_deref(), key.as_ref()).map_err(err)?;
+        let project = db::get_project(&c, id).map_err(err)?.ok_or_else(|| format!("project {id} not found"))?;
+        refresh_project(&c, &project, &state::load_settings(&c), &presets)?;
+        Ok(project)
+    })
+    .await
+}
+
 // ---------- versions ----------
 
 #[tauri::command]
@@ -57,9 +92,9 @@ pub async fn add_version(state: State<'_, Shared>, project_id: i64, path: String
     blocking(move || {
         let p = Path::new(&path);
         let name = p.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| "version".into());
-        let kind = kind.unwrap_or_else(|| if name.to_lowercase().contains("master") { Kind::Master } else { Kind::Mix });
+        let kind = kind.unwrap_or_else(|| guess_kind(&name));
         let label = label.filter(|l| !l.trim().is_empty()).unwrap_or(name);
-        let targets = s.targets(kind);
+        let targets = s.targets_for(project_id, kind);
         let (audio, report) = mixlens_core::analyze_file(p, &targets).map_err(err)?;
         let summary = {
             let c = s.db.lock().unwrap();
@@ -71,10 +106,22 @@ pub async fn add_version(state: State<'_, Shared>, project_id: i64, path: String
     .await
 }
 
+/// Kind from a file name: "ref"/"reference" as a separate word, then "master", else a mix.
+pub fn guess_kind(stem: &str) -> Kind {
+    let lower = stem.to_lowercase();
+    if lower.split(|c: char| !c.is_alphanumeric()).any(|w| w == "ref" || w == "reference") {
+        Kind::Reference
+    } else if lower.contains("master") {
+        Kind::Master
+    } else {
+        Kind::Mix
+    }
+}
+
 #[tauri::command]
 pub fn update_version(state: State<'_, Shared>, id: i64, label: String, kind: Kind) -> R<VersionSummary> {
     let mut v = state.version(id)?;
-    refresh_findings(&mut v.report, &state.targets(kind));
+    refresh_findings(&mut v.report, &state.targets_for(v.project_id, kind));
     let c = state.db.lock().unwrap();
     db::update_version(&c, id, label.trim(), kind, &v.report).map_err(err)?;
     Ok(db::summarize(id, v.project_id, label.trim().to_string(), v.path, kind, v.created_at, &v.report))
@@ -105,6 +152,22 @@ pub async fn compare_versions(state: State<'_, Shared>, a: i64, b: i64) -> R<Val
         let c = compare(&aa, &va.report, &ab, &vb.report).map_err(err)?;
         let mut v = serde_json::to_value(&c).map_err(err)?;
         v["octave_bands"] = json!(mixlens_core::compare::octave_band_labels());
+        Ok(v)
+    })
+    .await
+}
+
+/// A version against a reference track. Either argument may be the reference.
+#[tauri::command]
+pub async fn compare_reference(state: State<'_, Shared>, a: i64, b: i64) -> R<Value> {
+    let s: Shared = state.inner().clone();
+    blocking(move || {
+        let (va, vb) = (s.version(a)?, s.version(b)?);
+        let (version, reference) = if va.kind == Kind::Reference && vb.kind != Kind::Reference { (vb, va) } else { (va, vb) };
+        let c = reference_compare(&version.report, &reference.report);
+        let mut v = serde_json::to_value(&c).map_err(err)?;
+        v["version_id"] = json!(version.id);
+        v["reference_id"] = json!(reference.id);
         Ok(v)
     })
     .await
@@ -163,13 +226,9 @@ pub async fn save_settings(state: State<'_, Shared>, settings: Settings) -> R<Se
         // Target loudness affects findings; re-run the (cheap) rules for every version.
         if (old.target_lufs - settings.target_lufs).abs() > 1e-9 {
             let c = s.db.lock().unwrap();
-            let projects = db::list_projects(&c).map_err(err)?;
-            for p in projects {
-                for mut v in db::list_versions(&c, p.id).map_err(err)? {
-                    let t = mixlens_core::Targets { kind: v.kind, target_lufs: settings.target_lufs, ..Default::default() };
-                    refresh_findings(&mut v.report, &t);
-                    db::update_version(&c, v.id, &v.label, v.kind, &v.report).map_err(err)?;
-                }
+            let presets = state::load_presets(&c);
+            for p in db::list_projects(&c).map_err(err)? {
+                refresh_project(&c, &p, &settings, &presets)?;
             }
         }
         Ok(settings_view(&s))

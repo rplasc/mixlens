@@ -19,6 +19,12 @@ The assistant never hears or receives your audio. It reads the measurements MixL
 
 Findings are produced by deterministic rules, so they work offline and without an API key. Mark each version as a **mix** or a **master** and the rules adjust: mixes are checked for headroom and over-compression, masters against the streaming target and true-peak ceiling (−1 dBTP, or −2 dBTP when louder than the target).
 
+Three optional settings sharpen the analysis:
+
+- **Reference tracks.** Add a finished track you want the song to sit next to, under **References** in the sidebar (files with `ref` or `reference` in their name are recognised automatically). References aren't checked for problems. Comparing against one shows the level difference to match before listening, octave and third-octave balance, and differences in loudness, dynamics and width, instead of running a null test.
+- **Genre.** Pick the song's genre to compare its octave balance, tilt, dynamics and low-end width with typical values for that style, and to adjust rule thresholds such as over-compression. The built-in presets are rough starting points; a reference track is a better guide.
+- **Key.** Set the song's key and bass peaks are labelled as root, fifth or other scale notes, or as out of key or between notes. Prominent off-key peaks are flagged as likely resonances, and low-mid build-ups on the root or fifth are treated as partly musical. The Tone tab also shows the song's tuning offset from A=440 and the root and fifth frequencies that are safe to boost.
+
 ## Install
 
 1. Open the [Releases](../../releases) page and download `MixLens_x.y.z_x64-setup.exe`.
@@ -67,7 +73,10 @@ The analysis engine also ships as a command-line tool:
 ```sh
 cargo run --release -p mixlens-cli -- analyze song_mix.wav
 cargo run --release -p mixlens-cli -- analyze song_master.wav --master --target -14
+cargo run --release -p mixlens-cli -- analyze song_mix.wav --genre hiphop --key "F minor"
 cargo run --release -p mixlens-cli -- compare song_master_v11.wav song_master_v12.wav
+cargo run --release -p mixlens-cli -- compare song_master.wav reference.wav --reference
+cargo run --release -p mixlens-cli -- presets
 cargo run --release -p mixlens-cli -- section song_master.wav 172 198
 cargo run --release -p mixlens-cli -- codec song_master.wav
 ```

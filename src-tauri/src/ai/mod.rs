@@ -59,6 +59,9 @@ How to read the measurements:
 - short-term loudness is 3 s windows; sections are derived from it (loud/quiet/silence).
 - Comparisons: per-window diff near -120 dB means identical; above -20 dB means that region changed. Time-varying plugins (tape wobble, chorus, noise) prevent perfect nulls even when nothing was edited. gain_db is only meaningful when residual_rel_db is low.
 - Internal digital silence or missing sections versus a previous version usually means tracks were muted or soloed during export.
+- Versions marked [reference] are other artists' finished tracks the user wants to sound like. They get no mix/master findings. compare_versions against one returns mode "reference": there is no null test, and the user should level-match first (level_match_db). Treat differences as directions to listen in, not targets to copy, and keep genre and arrangement differences in mind.
+- genre_match compares octave energy shares with the song's genre preset: delta_db beyond tolerance_db is unusual for the genre, and checks lists typical ranges. Presets are rough starting points, so a reference track outranks them.
+- key_analysis interprets tonal peaks in the song's key: role root/fifth/third/in key are the music; out_of_key or between_notes peaks are likely room or EQ resonances or clashing notes. tuning_offset_cents is the song's tuning versus A=440. safe_freqs are root and fifth frequencies that suit bass boosts.
 - tail_truncated means the file ends while sound is still decaying; trailing silence counts toward track length.
 
 Streaming references (2026): Spotify normalizes to -14 LUFS by default; quieter masters are only raised as far as 1 dB of peak headroom allows; recommends true peak <= -1 dBTP, or <= -2 dBTP when louder than -14 LUFS. Apple Music Sound Check targets about -16 LUFS. YouTube about -14 LUFS (turns down only). Distributors commonly want 16- or 24-bit WAV at 44.1 kHz or higher; dither when reducing bit depth."#;
@@ -68,8 +71,14 @@ fn fmt_time(s: f64) -> String {
 }
 
 /// Compact per-version context, rebuilt every turn (cheap) so the system prompt stays cacheable.
-fn project_context(rows: &[db::VersionRow], focus: &[i64]) -> String {
-    let mut s = String::from("Project versions (oldest first):\n");
+fn project_context(project: Option<&db::Project>, presets: &[mixlens_core::GenrePreset], rows: &[db::VersionRow], focus: &[i64]) -> String {
+    let genre = project.and_then(|p| p.genre.as_deref()).map(|id| presets.iter().find(|g| g.id == id).map_or(id, |g| g.name.as_str()));
+    let key = project.and_then(|p| p.key).map(|k| k.name());
+    let mut s = format!(
+        "Song: genre {}, key {}\nProject versions (oldest first):\n",
+        genre.unwrap_or("not set"),
+        key.as_deref().unwrap_or("not set")
+    );
     for v in rows {
         let r = &v.report;
         let issues: Vec<String> = r
@@ -156,9 +165,14 @@ pub async fn run(state: Shared, app: AppHandle, project_id: i64, question: Strin
         p => settings::get_key(p),
     };
 
-    let (rows, history) = {
+    let (rows, history, project, presets) = {
         let c = state.db.lock().unwrap();
-        (db::list_versions(&c, project_id).map_err(|e| e.to_string())?, db::messages(&c, project_id).map_err(|e| e.to_string())?)
+        (
+            db::list_versions(&c, project_id).map_err(|e| e.to_string())?,
+            db::messages(&c, project_id).map_err(|e| e.to_string())?,
+            db::get_project(&c, project_id).map_err(|e| e.to_string())?,
+            crate::state::load_presets(&c),
+        )
     };
     if rows.is_empty() {
         return Err("Add at least one version to this project first.".into());
@@ -182,7 +196,7 @@ pub async fn run(state: Shared, app: AppHandle, project_id: i64, question: Strin
             _ => msgs.push(next),
         }
     }
-    let user_turn = format!("{}\nQuestion: {}", project_context(&rows, &focus), question);
+    let user_turn = format!("{}\nQuestion: {}", project_context(project.as_ref(), &presets, &rows, &focus), question);
     if let Some(Msg::User(prev)) = msgs.last_mut() {
         prev.push_str("\n\n");
         prev.push_str(&user_turn);

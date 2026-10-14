@@ -1,17 +1,21 @@
 //! Serializable analysis report. Everything the UI and the AI see comes from here.
 
 use crate::audio::FileInfo;
+use crate::genre::{GenreMatch, GenrePreset};
+use crate::key::{KeyAnalysis, MusicalKey};
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// Whether a file is a pre-master mix or a finished master. Changes which rules apply.
+/// Whether a file is a pre-master mix, a finished master, or someone else's finished track
+/// used as a reference. Changes which rules apply.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     #[default]
     Mix,
     Master,
+    Reference,
 }
 
 /// Rules context for findings.
@@ -24,11 +28,17 @@ pub struct Targets {
     pub ceiling_dbtp: f64,
     /// Max true peak for masters louder than the target (dBTP).
     pub loud_ceiling_dbtp: f64,
+    /// The song's genre preset, if set: tonal target and genre-specific thresholds.
+    #[serde(default)]
+    pub genre: Option<GenrePreset>,
+    /// The song's key, if set: labels tonal peaks and estimates tuning.
+    #[serde(default)]
+    pub key: Option<MusicalKey>,
 }
 
 impl Default for Targets {
     fn default() -> Self {
-        Self { kind: Kind::Mix, target_lufs: -14.0, ceiling_dbtp: -1.0, loud_ceiling_dbtp: -2.0 }
+        Self { kind: Kind::Mix, target_lufs: -14.0, ceiling_dbtp: -1.0, loud_ceiling_dbtp: -2.0, genre: None, key: None }
     }
 }
 
@@ -43,6 +53,12 @@ pub struct Report {
     pub sections: Vec<Section>,
     pub dither: Option<Dither>,
     pub findings: Vec<Finding>,
+    /// Comparison with the song's genre preset (derived; set by `refresh_findings`).
+    #[serde(default)]
+    pub genre_match: Option<GenreMatch>,
+    /// Tonal peaks interpreted in the song's key (derived; set by `refresh_findings`).
+    #[serde(default)]
+    pub key_analysis: Option<KeyAnalysis>,
     pub analysis_ms: u64,
     /// K-weighted mean-square energy per 100 ms sub-block (sum of channels).
     /// Lets section loudness be computed later without re-decoding.
@@ -111,6 +127,9 @@ pub struct Spectrum {
     pub third_octave: Vec<BandDev>,
     pub octave_share: Vec<OctaveShare>,
     pub lf_peaks: Vec<LfPeak>,
+    /// Narrow peaks between 200 and 800 Hz, for telling chord tones from low-mid build-up.
+    #[serde(default)]
+    pub mid_peaks: Vec<LfPeak>,
     pub sub30_share_db: f64,
     pub sibilance: Sibilance,
 }
@@ -134,7 +153,7 @@ pub struct OctaveShare {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LfPeak {
     pub hz: f64,
-    /// Peak level above the median of 30–300 Hz (dB). Peaks on note pitches are musical, not resonances.
+    /// Peak level above the median of the searched range (dB).
     pub above_median_db: f64,
     pub note: String,
 }

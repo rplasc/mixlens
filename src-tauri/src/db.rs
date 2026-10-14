@@ -1,6 +1,6 @@
 //! SQLite persistence: projects, versions (with cached reports), chat history, settings.
 
-use mixlens_core::{Kind, Report, Severity};
+use mixlens_core::{Kind, MusicalKey, Report, Severity};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -38,7 +38,24 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             value TEXT NOT NULL
          );",
     )?;
+    migrate(&conn)?;
     Ok(conn)
+}
+
+/// Schema upgrades, tracked with `PRAGMA user_version`.
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 1 {
+        // Song context: genre preset id and key (JSON of `MusicalKey`).
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE projects ADD COLUMN genre TEXT;
+             ALTER TABLE projects ADD COLUMN song_key TEXT;
+             PRAGMA user_version = 1;
+             COMMIT;",
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -47,6 +64,9 @@ pub struct Project {
     pub name: String,
     pub version_count: i64,
     pub created_at: String,
+    /// Genre preset id.
+    pub genre: Option<String>,
+    pub key: Option<MusicalKey>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -81,14 +101,15 @@ pub fn kind_str(k: Kind) -> &'static str {
     match k {
         Kind::Mix => "mix",
         Kind::Master => "master",
+        Kind::Reference => "reference",
     }
 }
 
 pub fn parse_kind(s: &str) -> Kind {
-    if s == "master" {
-        Kind::Master
-    } else {
-        Kind::Mix
+    match s {
+        "master" => Kind::Master,
+        "reference" => Kind::Reference,
+        _ => Kind::Mix,
     }
 }
 
@@ -115,21 +136,38 @@ pub fn summarize(id: i64, project_id: i64, label: String, path: String, kind: Ki
     }
 }
 
+const PROJECT_COLS: &str = "p.id, p.name, p.created_at, (SELECT COUNT(*) FROM versions v WHERE v.project_id = p.id), p.genre, p.song_key";
+
+fn row_to_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
+    let key: Option<String> = r.get(5)?;
+    Ok(Project {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        created_at: r.get(2)?,
+        version_count: r.get(3)?,
+        genre: r.get(4)?,
+        key: key.and_then(|k| serde_json::from_str(&k).ok()),
+    })
+}
+
 pub fn list_projects(c: &Connection) -> rusqlite::Result<Vec<Project>> {
-    let mut st = c.prepare(
-        "SELECT p.id, p.name, p.created_at, (SELECT COUNT(*) FROM versions v WHERE v.project_id = p.id)
-         FROM projects p ORDER BY p.id DESC",
-    )?;
-    let rows = st.query_map([], |r| Ok(Project { id: r.get(0)?, name: r.get(1)?, created_at: r.get(2)?, version_count: r.get(3)? }))?;
+    let mut st = c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects p ORDER BY p.id DESC"))?;
+    let rows = st.query_map([], row_to_project)?;
     rows.collect()
+}
+
+pub fn get_project(c: &Connection, id: i64) -> rusqlite::Result<Option<Project>> {
+    c.query_row(&format!("SELECT {PROJECT_COLS} FROM projects p WHERE p.id = ?1"), params![id], row_to_project).optional()
 }
 
 pub fn create_project(c: &Connection, name: &str) -> rusqlite::Result<Project> {
     c.execute("INSERT INTO projects (name) VALUES (?1)", params![name])?;
-    let id = c.last_insert_rowid();
-    c.query_row("SELECT id, name, created_at FROM projects WHERE id = ?1", params![id], |r| {
-        Ok(Project { id: r.get(0)?, name: r.get(1)?, created_at: r.get(2)?, version_count: 0 })
-    })
+    Ok(get_project(c, c.last_insert_rowid())?.expect("just inserted"))
+}
+
+pub fn set_project_context(c: &Connection, id: i64, genre: Option<&str>, key: Option<&MusicalKey>) -> rusqlite::Result<()> {
+    let key = key.map(|k| serde_json::to_string(k).expect("key serializes"));
+    c.execute("UPDATE projects SET genre = ?1, song_key = ?2 WHERE id = ?3", params![genre, key, id]).map(|_| ())
 }
 
 pub fn rename_project(c: &Connection, id: i64, name: &str) -> rusqlite::Result<()> {

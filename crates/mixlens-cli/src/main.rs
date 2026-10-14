@@ -1,17 +1,18 @@
 //! `mixlens` command-line front end for the analysis engine.
 //!
-//!   mixlens analyze <file> [--master] [--target -14] [--ai]
-//!   mixlens compare <a> <b> [--ai]
+//!   mixlens analyze <file> [--master|--reference] [--target -14] [--genre <id>] [--key <key>] [--ai]
+//!   mixlens compare <a> <b> [--reference] [--ai]
+//!   mixlens presets
 //!   mixlens section <file> <t0> <t1>
 //!   mixlens codec <file> [--ffmpeg <path>]
 
-use mixlens_core::{analyze_file, codec, compare, tools, Kind, Targets};
+use mixlens_core::{analyze_file, builtin_presets, codec, compare, reference_compare, tools, Kind, MusicalKey, Targets};
 use std::path::Path;
 use std::process::exit;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  mixlens analyze <file> [--master] [--target <lufs>] [--ai]\n  mixlens compare <a> <b> [--ai]\n  mixlens section <file> <t0> <t1>\n  mixlens codec <file> [--ffmpeg <path>]"
+        "usage:\n  mixlens analyze <file> [--master|--reference] [--target <lufs>] [--genre <id>] [--key <key, e.g. F#m>] [--ai]\n  mixlens compare <a> <b> [--reference] [--ai]   (--reference: b is a reference track)\n  mixlens presets\n  mixlens section <file> <t0> <t1>\n  mixlens codec <file> [--ffmpeg <path>]"
     );
     exit(2)
 }
@@ -30,6 +31,18 @@ fn main() {
     if let Some(t) = opt("--target").and_then(|t| t.parse().ok()) {
         targets.target_lufs = t;
     }
+    if let Some(id) = opt("--genre") {
+        targets.genre = Some(builtin_presets().into_iter().find(|p| p.id == id).unwrap_or_else(|| {
+            eprintln!("unknown genre '{id}'; run `mixlens presets` for the list");
+            exit(2)
+        }));
+    }
+    if let Some(k) = opt("--key") {
+        targets.key = Some(MusicalKey::parse(&k).unwrap_or_else(|| {
+            eprintln!("can't read key '{k}'; use e.g. C, F#m, Bb major, A minor");
+            exit(2)
+        }));
+    }
     let ai = flag("--ai");
     let die = |e: mixlens_core::Error| -> ! {
         eprintln!("error: {e}");
@@ -39,6 +52,9 @@ fn main() {
     let out = match args[0].as_str() {
         "analyze" => {
             let path = args.get(1).unwrap_or_else(|| usage());
+            if flag("--reference") {
+                targets.kind = Kind::Reference;
+            }
             let (_, r) = analyze_file(Path::new(path), &targets).unwrap_or_else(|e| die(e));
             if ai {
                 r.to_ai_json()
@@ -53,6 +69,11 @@ fn main() {
         "compare" => {
             let (pa, pb) = (args.get(1).unwrap_or_else(|| usage()), args.get(2).unwrap_or_else(|| usage()));
             let ((a, ra), (b, rb)) = rayon_join(pa, pb, &targets);
+            if flag("--reference") {
+                let c = reference_compare(&ra, &rb);
+                println!("{}", serde_json::to_string_pretty(&if ai { c.to_ai_json() } else { serde_json::to_value(&c).unwrap() }).unwrap());
+                return;
+            }
             let c = compare(&a, &ra, &b, &rb).unwrap_or_else(|e| die(e));
             if ai {
                 c.to_ai_json()
@@ -70,6 +91,7 @@ fn main() {
                 "bands": tools::band_energy(&a, t0, t1),
             })
         }
+        "presets" => serde_json::to_value(builtin_presets()).unwrap(),
         "codec" => {
             let path = args.get(1).unwrap_or_else(|| usage());
             let ff = codec::find_ffmpeg(opt("--ffmpeg").as_deref()).unwrap_or_else(|| {

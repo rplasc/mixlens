@@ -3,11 +3,29 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
-export type Kind = 'mix' | 'master';
+export type Kind = 'mix' | 'master' | 'reference';
 export type Severity = 'ok' | 'info' | 'warn' | 'error';
 export type Provider = 'anthropic' | 'openai' | 'ollama';
 
-export interface Project { id: number; name: string; version_count: number; created_at: string }
+export interface MusicalKey { tonic: number; mode: 'major' | 'minor' }
+export interface Project { id: number; name: string; version_count: number; created_at: string; genre: string | null; key: MusicalKey | null }
+
+export interface GenrePreset {
+  id: string; name: string; builtin: boolean; octave_target_db: number[]; octave_tolerance_db: number[];
+  tilt_range: [number, number]; master_lufs_range: [number, number]; master_plr_range: [number, number];
+  lra_range: [number, number]; mix_plr_min: number; low_corr_min: number; sibilance_p99_max: number;
+}
+export interface GenreMatch {
+  preset_id: string; preset_name: string;
+  bands: { lo: number; hi: number; share_db: number; target_db: number; delta_db: number; tolerance_db: number }[];
+  checks: { metric: string; label: string; value: number; lo: number | null; hi: number | null; unit: string; within: boolean }[];
+}
+export type KeyRole = 'root' | 'fifth' | 'third' | 'scale_tone' | 'out_of_key' | 'between_notes';
+export interface KeyedPeak { hz: number; note: string; cents: number; above_median_db: number; role: KeyRole }
+export interface KeyAnalysis {
+  key: MusicalKey; key_name: string; tuning_offset_cents: number | null; a4_hz: number;
+  peaks: KeyedPeak[]; mid_peaks: KeyedPeak[]; safe_freqs: { note: string; hz: number; role: KeyRole }[];
+}
 
 export interface VersionSummary {
   id: number; project_id: number; label: string; file_name: string; path: string; kind: Kind;
@@ -43,6 +61,7 @@ export interface Report {
     tilt_db_per_oct: number; third_octave: BandDev[];
     octave_share: { lo: number; hi: number; share_db: number }[];
     lf_peaks: { hz: number; above_median_db: number; note: string }[];
+    mid_peaks?: { hz: number; above_median_db: number; note: string }[];
     sub30_share_db: number;
     sibilance: { median_db: number; p99_db: number; max_db: number };
   };
@@ -54,6 +73,8 @@ export interface Report {
   sections: Section[];
   dither: null | { bits: number; samples_checked: number; distinct_codes: number; nonzero_fraction: number; level_dbfs: number; detected: boolean; note: string };
   findings: Finding[];
+  genre_match?: GenreMatch | null;
+  key_analysis?: KeyAnalysis | null;
   analysis_ms: number;
 }
 
@@ -67,6 +88,14 @@ export interface Comparison {
   metric_deltas: { name: string; a: number; b: number; delta: number; unit: string }[];
   third_octave_delta: { fc: number; dev_a: number; dev_b: number }[];
   octave_bands: string[];
+}
+
+export interface ReferenceComparison {
+  version_file: string; reference_file: string; version_id: number; reference_id: number; level_match_db: number;
+  octave: { lo: number; hi: number; version_db: number; reference_db: number; delta_db: number }[];
+  third_octave_delta: BandDev[];
+  /** a = reference, b = version. */
+  metric_deltas: { name: string; a: number; b: number; delta: number; unit: string }[];
 }
 
 export interface SectionAnalysis {
@@ -104,12 +133,15 @@ export const api = {
   createProject: (name: string) => call<Project>('create_project', { name }),
   renameProject: (id: number, name: string) => call<void>('rename_project', { id, name }),
   deleteProject: (id: number) => call<void>('delete_project', { id }),
+  listGenrePresets: () => call<GenrePreset[]>('list_genre_presets'),
+  updateProjectContext: (id: number, genre: string | null, key: MusicalKey | null) => call<Project>('update_project_context', { id, genre, key }),
   listVersions: (projectId: number) => call<VersionSummary[]>('list_versions', { projectId }),
   addVersion: (projectId: number, path: string, kind?: Kind) => call<VersionSummary>('add_version', { projectId, path, kind: kind ?? null, label: null }),
   updateVersion: (id: number, label: string, kind: Kind) => call<VersionSummary>('update_version', { id, label, kind }),
   deleteVersion: (id: number) => call<void>('delete_version', { id }),
   getReport: (id: number) => call<ReportEnvelope>('get_report', { id }),
   compare: (a: number, b: number) => call<Comparison>('compare_versions', { a, b }),
+  compareReference: (a: number, b: number) => call<ReferenceComparison>('compare_reference', { a, b }),
   section: (id: number, startS: number, endS: number) => call<SectionAnalysis>('section_analysis', { id, startS, endS }),
   codecCheck: (id: number) => call<CodecResult[]>('codec_check', { id }),
   getSettings: () => call<SettingsView>('get_settings'),

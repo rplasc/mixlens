@@ -3,7 +3,7 @@
 use super::ToolDef;
 use crate::state::Inner;
 use mixlens_core::report::round_floats;
-use mixlens_core::{codec, compare, tools};
+use mixlens_core::{codec, compare, reference_compare, tools, Kind};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -16,7 +16,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "compare_versions",
-            description: "Align two versions sample-accurately and compare them: null-test residual, which time regions changed, per-section loudness deltas, per-octave energy changes in changed regions, third-octave balance deltas, and metric deltas. Use version_a for the older/reference version.",
+            description: "Compare two versions. For two bounces of this song (mode null_test): sample-accurate alignment, null-test residual, which time regions changed, per-section loudness deltas, per-octave energy changes in changed regions, third-octave balance deltas, and metric deltas; use version_a for the older version. If either is a reference track (mode reference): level-match amount, octave balance vs the reference, level-matched third-octave difference, and loudness/dynamics/width deltas.",
             schema: json!({"type": "object", "properties": {"version_a": {"type": "integer"}, "version_b": {"type": "integer"}}, "required": ["version_a", "version_b"]}),
         },
         ToolDef {
@@ -56,6 +56,14 @@ pub fn execute(inner: &Inner, name: &str, args: &Value) -> Result<Value, String>
         "compare_versions" => {
             let (ia, ib) = (id(args, "version_a")?, id(args, "version_b")?);
             let (va, vb) = (inner.version(ia)?, inner.version(ib)?);
+            if va.kind == Kind::Reference || vb.kind == Kind::Reference {
+                // A reference is a different song: compare balance and dynamics, never null-test.
+                let (version, reference) = if va.kind == Kind::Reference && vb.kind != Kind::Reference { (vb, va) } else { (va, vb) };
+                let mut out = reference_compare(&version.report, &reference.report).to_ai_json();
+                out["version"] = json!({"id": version.id, "label": version.label});
+                out["reference"] = json!({"id": reference.id, "label": reference.label});
+                return Ok(out);
+            }
             let (aa, ab) = (inner.audio(ia)?, inner.audio(ib)?);
             let c = compare(&aa, &va.report, &ab, &vb.report).map_err(|e| e.to_string())?;
             let mut out = c.to_ai_json();

@@ -1,5 +1,5 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
-import { Kind } from './api';
+import { Kind, MusicalKey } from './api';
 import { Assistant } from './assistant';
 import { Compare } from './compare';
 import { format, time } from './fmt';
@@ -21,7 +21,31 @@ import { Store, Tab } from './store';
         @if (store.version(); as v) {
           <header class="vhead">
             <div class="title">
-              <p class="song">{{ store.project()?.name }}</p>
+              <div class="songbar">
+                <p class="song">{{ store.project()?.name }}</p>
+                <label class="ctx">
+                  <span>Genre</span>
+                  <select (change)="setGenre($any($event.target).value)" aria-label="Song genre">
+                    <option value="" [selected]="!store.project()?.genre">Not set</option>
+                    @for (g of store.presets(); track g.id) {
+                      <option [value]="g.id" [selected]="g.id === store.project()?.genre">{{ g.name }}</option>
+                    }
+                  </select>
+                </label>
+                <label class="ctx">
+                  <span>Key</span>
+                  <select (change)="setTonic($any($event.target).value)" aria-label="Song key">
+                    <option value="" [selected]="!key()">Not set</option>
+                    @for (n of tonics; track $index) {
+                      <option [value]="$index" [selected]="key()?.tonic === $index">{{ n }}</option>
+                    }
+                  </select>
+                  <select (change)="setMode($any($event.target).value)" [disabled]="!key()" aria-label="Major or minor">
+                    <option value="major" [selected]="key()?.mode !== 'minor'">major</option>
+                    <option value="minor" [selected]="key()?.mode === 'minor'">minor</option>
+                  </select>
+                </label>
+              </div>
               @if (editing()) {
                 <form (submit)="saveLabel($event, labelBox.value)">
                   <input #labelBox [value]="v.label" (blur)="saveLabel($event, labelBox.value)" (keydown.escape)="editing.set(false)" autofocus />
@@ -35,6 +59,8 @@ import { Store, Tab } from './store';
               <div class="seg" role="radiogroup" aria-label="Version type">
                 <button role="radio" [attr.aria-checked]="v.kind === 'mix'" [class.on]="v.kind === 'mix'" (click)="setKind('mix')">Mix</button>
                 <button role="radio" [attr.aria-checked]="v.kind === 'master'" [class.on]="v.kind === 'master'" (click)="setKind('master')">Master</button>
+                <button role="radio" [attr.aria-checked]="v.kind === 'reference'" [class.on]="v.kind === 'reference'" (click)="setKind('reference')"
+                  title="Someone else's finished track, used for comparisons">Reference</button>
               </div>
               @if (confirmDelete()) {
                 <button class="danger" (click)="store.deleteVersion(); confirmDelete.set(false)">Remove version</button>
@@ -97,7 +123,10 @@ import { Store, Tab } from './store';
     .chat { border-left: 1px solid var(--line); background: #1e252b; min-height: 0; }
     main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     .vhead { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 18px 28px 12px; }
+    .songbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
     .song { color: var(--muted); font-size: 13px; }
+    .ctx { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--faint); }
+    .ctx select { font-size: 12px; padding: 1px 4px; }
     .title h1 { font-size: 26px; cursor: text; }
     .title input { font-size: 22px; font-family: var(--font-display); width: 360px; }
     .file { color: var(--faint); font-size: 12px; margin-top: 2px; }
@@ -133,6 +162,23 @@ export class App implements OnInit {
     { id: 'compare', label: 'Compare versions' },
   ];
 
+  readonly tonics = ['C', 'C♯/D♭', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+  readonly key = computed(() => this.store.project()?.key ?? null);
+
+  setGenre(id: string) {
+    void this.store.setSongContext(id || null, this.key());
+  }
+
+  setTonic(v: string) {
+    const key: MusicalKey | null = v === '' ? null : { tonic: +v, mode: this.key()?.mode ?? 'major' };
+    void this.store.setSongContext(this.store.project()?.genre ?? null, key);
+  }
+
+  setMode(mode: string) {
+    const k = this.key();
+    if (k) void this.store.setSongContext(this.store.project()?.genre ?? null, { ...k, mode: mode === 'minor' ? 'minor' : 'major' });
+  }
+
   readonly fmtFormat = computed(() => {
     const v = this.store.version();
     return v ? format(v.sample_format, v.sample_rate) : '';
@@ -144,7 +190,7 @@ export class App implements OnInit {
 
   openTab(t: Tab) {
     this.store.tab.set(t);
-    if (t === 'compare' && !this.store.comparison() && this.store.compareWith() !== null) void this.store.runCompare();
+    if (t === 'compare' && !this.store.comparison() && !this.store.refComparison() && this.store.compareWith() !== null) void this.store.runCompare();
   }
 
   setKind(kind: Kind) {

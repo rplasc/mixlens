@@ -3,7 +3,7 @@
 use crate::analyze::{octave_shares, range_loudness, OCTAVE_BANDS};
 use crate::audio::{from_planar, Audio};
 use crate::dsp::{self, pow_db};
-use crate::report::{Report, SectionKind};
+use crate::report::{BandDev, Report, SectionKind};
 use crate::{Error, Result};
 use realfft::RealFftPlanner;
 use rubato::{FftFixedIn, Resampler};
@@ -328,12 +328,96 @@ pub fn compare(a: &Audio, ra: &Report, b_in: &Audio, rb: &Report) -> Result<Comp
     })
 }
 
+/// A version measured against a reference track (a different song), so there is no
+/// alignment or null test: only balance, loudness, dynamics and width.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReferenceComparison {
+    pub version_file: String,
+    pub reference_file: String,
+    /// Reference loudness minus version loudness (LU): turn the reference down this much to A/B fairly.
+    pub level_match_db: f64,
+    pub octave: Vec<OctaveCompare>,
+    /// Version minus reference per third octave (dB), level-matched over 100 Hz–5 kHz.
+    pub third_octave_delta: Vec<BandDev>,
+    pub metric_deltas: Vec<MetricDelta>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OctaveCompare {
+    pub lo: f64,
+    pub hi: f64,
+    pub version_db: f64,
+    pub reference_db: f64,
+    pub delta_db: f64,
+}
+
+/// `metric_deltas` use a = reference, b = version, so `delta` reads "version vs reference".
+pub fn reference_compare(rv: &Report, rr: &Report) -> ReferenceComparison {
+    let octave = rv
+        .spectrum
+        .octave_share
+        .iter()
+        .zip(&rr.spectrum.octave_share)
+        .filter(|(v, r)| v.share_db > -100.0 && r.share_db > -100.0)
+        .map(|(v, r)| OctaveCompare { lo: v.lo, hi: v.hi, version_db: v.share_db, reference_db: r.share_db, delta_db: v.share_db - r.share_db })
+        .collect();
+
+    let pairs: Vec<(f64, f64)> = rv
+        .spectrum
+        .third_octave
+        .iter()
+        .filter_map(|v| rr.spectrum.third_octave.iter().find(|r| (r.fc - v.fc).abs() < 0.5).map(|r| (v.fc, v.level_db - r.level_db)))
+        .collect();
+    let mid: Vec<f64> = pairs.iter().filter(|(fc, _)| (100.0..=5000.0).contains(fc)).map(|(_, d)| *d).collect();
+    let offset = if mid.is_empty() { 0.0 } else { mid.iter().sum::<f64>() / mid.len() as f64 };
+    let third_octave_delta = pairs.into_iter().map(|(fc, d)| BandDev { fc, level_db: 0.0, dev_db: d - offset }).collect();
+
+    let (lr, lv) = (&rr.loudness, &rv.loudness);
+    let md = |name: &str, a: f64, b: f64, unit: &str| MetricDelta { name: name.into(), a, b, delta: b - a, unit: unit.into() };
+    let metric_deltas = vec![
+        md("integrated", lr.integrated_lufs, lv.integrated_lufs, "LUFS"),
+        md("true_peak", lr.true_peak_dbtp, lv.true_peak_dbtp, "dBTP"),
+        md("lra", lr.lra_lu, lv.lra_lu, "LU"),
+        md("plr", lr.plr_db, lv.plr_db, "dB"),
+        md("crest", lr.crest_db, lv.crest_db, "dB"),
+        md("tilt", rr.spectrum.tilt_db_per_oct, rv.spectrum.tilt_db_per_oct, "dB/oct"),
+        md("correlation", rr.stereo.correlation, rv.stereo.correlation, ""),
+        md("low_correlation", rr.stereo.low_correlation, rv.stereo.low_correlation, ""),
+        md("side_mid", rr.stereo.side_mid_db, rv.stereo.side_mid_db, "dB"),
+        md("mono_loss", rr.stereo.mono_loss_lu, rv.stereo.mono_loss_lu, "LU"),
+        md("sibilance_p99", rr.spectrum.sibilance.p99_db, rv.spectrum.sibilance.p99_db, "dB"),
+        md("sub30", rr.spectrum.sub30_share_db, rv.spectrum.sub30_share_db, "dB"),
+    ];
+
+    ReferenceComparison {
+        version_file: rv.file.file_name.clone(),
+        reference_file: rr.file.file_name.clone(),
+        level_match_db: lr.integrated_lufs - lv.integrated_lufs,
+        octave,
+        third_octave_delta,
+        metric_deltas,
+    }
+}
+
+impl ReferenceComparison {
+    pub fn to_ai_json(&self) -> serde_json::Value {
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        if let Some(o) = v.as_object_mut() {
+            o.insert("mode".into(), serde_json::json!("reference"));
+            o.insert("metric_deltas_note".into(), serde_json::json!("a = reference, b = version, delta = version minus reference"));
+        }
+        crate::report::round_floats(&mut v);
+        v
+    }
+}
+
 impl Comparison {
     pub fn to_ai_json(&self) -> serde_json::Value {
         let mut v = serde_json::to_value(self).unwrap_or_default();
         if let Some(o) = v.as_object_mut() {
             // Summarize the window array as runs to save tokens.
             o.remove("windows");
+            o.insert("mode".into(), serde_json::json!("null_test"));
             o.insert("octave_bands".into(), serde_json::json!(octave_band_labels()));
         }
         crate::report::round_floats(&mut v);

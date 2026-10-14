@@ -1,7 +1,7 @@
 import { Component, ElementRef, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { BandChart } from './band-chart';
-import { clock, num, signed } from './fmt';
+import { clock, hz, num, signed } from './fmt';
 import { LoudnessBridge } from './loudness-bridge';
 import { Store } from './store';
 
@@ -55,7 +55,12 @@ export class DiffStrip implements OnInit, OnDestroy {
         <strong class="a">{{ store.version()?.label }}</strong>
         <span class="muted">against</span>
         <select [ngModel]="store.compareWith()" (ngModelChange)="store.compareWith.set(+$event)">
-          @for (v of store.otherVersions(); track v.id) { <option [ngValue]="v.id">{{ v.label }}</option> }
+          @if (bounces().length) {
+            <optgroup label="Versions">@for (v of bounces(); track v.id) { <option [ngValue]="v.id">{{ v.label }}</option> }</optgroup>
+          }
+          @if (refs().length) {
+            <optgroup label="References">@for (v of refs(); track v.id) { <option [ngValue]="v.id">{{ v.label }}</option> }</optgroup>
+          }
         </select>
       </label>
       <button class="primary" (click)="store.runCompare()" [disabled]="store.comparing() || store.compareWith() === null">
@@ -66,7 +71,50 @@ export class DiffStrip implements OnInit, OnDestroy {
     @if (!store.otherVersions().length) {
       <p class="empty">Add another version of this song to compare them.</p>
     } @else if (store.comparing()) {
-      <p class="empty">Aligning the files and running the null test…</p>
+      <p class="empty">{{ store.comparingReference() ? 'Comparing with the reference…' : 'Aligning the files and running the null test…' }}</p>
+    } @else if (rc(); as rc) {
+      <p class="verdict">{{ refVerdict() }}</p>
+
+      <div class="cols">
+        <section>
+          <h2>Measurements</h2>
+          <table class="data">
+            <thead><tr><th>Metric</th><th class="n b">Reference</th><th class="n a">{{ label(rc.version_id) }}</th><th class="n">Difference</th></tr></thead>
+            <tbody>
+              @for (m of rc.metric_deltas; track m.name) {
+                <tr>
+                  <td>{{ metricLabel(m.name) }}</td>
+                  <td class="n">{{ num(m.a, digits(m.name)) }}</td>
+                  <td class="n">{{ num(m.b, digits(m.name)) }}</td>
+                  <td class="n">{{ signed(m.delta, digits(m.name)) }} <span class="faint">{{ m.unit }}</span></td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </section>
+        <section>
+          <h2>Energy by octave</h2>
+          <table class="data">
+            <thead><tr><th>Band</th><th class="n b">Reference</th><th class="n a">{{ label(rc.version_id) }}</th><th class="n">Difference</th></tr></thead>
+            <tbody>
+              @for (o of rc.octave; track o.lo) {
+                <tr>
+                  <td>{{ hz(o.lo) }}–{{ hz(o.hi) }} Hz</td>
+                  <td class="n">{{ num(o.reference_db) }} dB</td>
+                  <td class="n">{{ num(o.version_db) }} dB</td>
+                  <td class="n" [style.color]="cellColor(o.delta_db)">{{ signed(o.delta_db) }} dB</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </section>
+      </div>
+
+      <section>
+        <h2>Tonal difference from {{ label(rc.reference_id) }}</h2>
+        <p class="muted small">{{ label(rc.version_id) }} minus the reference by third octave, level-matched over 100 Hz–5 kHz. Up means more energy than the reference.</p>
+        <ml-band-chart [a]="rc.third_octave_delta" [height]="200" />
+      </section>
     } @else if (c(); as c) {
       <p class="verdict">{{ verdict() }}</p>
 
@@ -176,6 +224,28 @@ export class Compare {
   readonly abs = Math.abs;
   readonly octaveLabels = ['20', '40', '80', '160', '320', '640', '1.3k', '2.5k', '5k', '8k', '12k', '16k'];
   readonly c = computed(() => this.store.comparison());
+  readonly rc = computed(() => this.store.refComparison());
+  readonly hz = hz;
+  readonly bounces = computed(() => this.store.otherVersions().filter((v) => v.kind !== 'reference'));
+  readonly refs = computed(() => this.store.otherVersions().filter((v) => v.kind === 'reference'));
+
+  label(id: number) {
+    return this.store.versions().find((v) => v.id === id)?.label ?? '';
+  }
+
+  readonly refVerdict = computed(() => {
+    const rc = this.rc();
+    if (!rc) return '';
+    const d = rc.level_match_db;
+    const level = Math.abs(d) < 0.5
+      ? 'Both play at about the same loudness, so you can A/B them directly.'
+      : `The reference is ${num(Math.abs(d))} dB ${d > 0 ? 'louder' : 'quieter'}; turn it ${d > 0 ? 'down' : 'up'} that much before comparing by ear.`;
+    const big = rc.octave.filter((o) => Math.abs(o.delta_db) >= 1.5).sort((a, b) => Math.abs(b.delta_db) - Math.abs(a.delta_db)).slice(0, 3);
+    const tone = big.length
+      ? ` Largest tonal differences: ${big.map((o) => `${hz(o.lo)}–${hz(o.hi)} Hz ${signed(o.delta_db)} dB`).join(', ')}.`
+      : ' Every octave is within 1.5 dB of the reference.';
+    return level + tone;
+  });
   readonly cur = computed(() => this.store.report()?.report ?? null);
   readonly ref = computed(() => this.store.compareReport());
   readonly refReport = computed(() => this.store.compareReport()?.report ?? null);
@@ -201,7 +271,8 @@ export class Compare {
     return ({
       integrated: 'Integrated', true_peak: 'True peak', lra: 'Loudness range', plr: 'PLR', crest: 'Crest factor',
       correlation: 'Correlation', low_correlation: 'Correlation < 120 Hz', mono_loss: 'Mono fold', duration: 'Length',
-      trailing_silence: 'Silence at end', tilt: 'Tilt', sibilance_p99: '5–10 kHz peaks',
+      trailing_silence: 'Silence at end', tilt: 'Tilt', sibilance_p99: '5–10 kHz peaks', side_mid: 'Side vs mid',
+      sub30: 'Below 30 Hz',
     } as Record<string, string>)[name] ?? name;
   }
   digits(name: string) {

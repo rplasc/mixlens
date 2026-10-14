@@ -1,7 +1,7 @@
 import { Injectable, computed, signal } from '@angular/core';
 import {
-  api, ChatMessage, CodecResult, Comparison, errorText, inTauri, Kind, Project, ReportEnvelope,
-  SectionAnalysis, SettingsView, VersionSummary,
+  api, ChatMessage, CodecResult, Comparison, errorText, GenrePreset, inTauri, Kind, MusicalKey, Project,
+  ReferenceComparison, ReportEnvelope, SectionAnalysis, SettingsView, VersionSummary,
 } from './api';
 
 export type Tab = 'overview' | 'spectrum' | 'stereo' | 'compare';
@@ -24,6 +24,7 @@ export class Store {
 
   readonly compareWith = signal<number | null>(null);
   readonly comparison = signal<Comparison | null>(null);
+  readonly refComparison = signal<ReferenceComparison | null>(null);
   readonly compareReport = signal<ReportEnvelope | null>(null);
   readonly comparing = signal(false);
 
@@ -37,6 +38,7 @@ export class Store {
   readonly error = signal<string | null>(null);
 
   readonly settings = signal<SettingsView | null>(null);
+  readonly presets = signal<GenrePreset[]>([]);
   readonly showSettings = signal(false);
 
   readonly chat = signal<ChatMessage[]>([]);
@@ -47,10 +49,19 @@ export class Store {
   readonly project = computed(() => this.projects().find((p) => p.id === this.projectId()) ?? null);
   readonly version = computed(() => this.versions().find((v) => v.id === this.versionId()) ?? null);
   readonly otherVersions = computed(() => this.versions().filter((v) => v.id !== this.versionId()));
+  readonly mixVersions = computed(() => this.versions().filter((v) => v.kind !== 'reference'));
+  readonly references = computed(() => this.versions().filter((v) => v.kind === 'reference'));
+  readonly genre = computed(() => this.presets().find((g) => g.id === this.project()?.genre) ?? null);
+  /** The comparison in view is against a reference track rather than another bounce. */
+  readonly comparingReference = computed(() => {
+    const kind = (id: number | null) => this.versions().find((v) => v.id === id)?.kind;
+    return kind(this.versionId()) === 'reference' || kind(this.compareWith()) === 'reference';
+  });
 
   async init() {
     try {
       this.settings.set(await api.getSettings());
+      this.presets.set(await api.listGenrePresets());
       const projects = await api.listProjects();
       this.projects.set(projects);
       if (projects.length) await this.selectProject(projects[0].id);
@@ -126,8 +137,23 @@ export class Store {
       const [versions, chat] = await Promise.all([api.listVersions(id), api.getChat(id)]);
       this.versions.set(versions);
       this.chat.set(chat);
-      const last = versions[versions.length - 1];
+      const last = versions.filter((v) => v.kind !== 'reference').at(-1) ?? versions.at(-1);
       if (last) await this.selectVersion(last.id);
+    } catch (e) {
+      this.fail(e);
+    }
+  }
+
+  async setSongContext(genre: string | null, key: MusicalKey | null) {
+    const pid = this.projectId();
+    if (pid == null) return;
+    try {
+      await api.updateProjectContext(pid, genre, key);
+      const [projects, versions] = await Promise.all([api.listProjects(), api.listVersions(pid)]);
+      this.projects.set(projects);
+      this.versions.set(versions);
+      const id = this.versionId();
+      if (id != null) this.report.set(await api.getReport(id));
     } catch (e) {
       this.fail(e);
     }
@@ -137,6 +163,7 @@ export class Store {
 
   private resetDerived() {
     this.comparison.set(null);
+    this.refComparison.set(null);
     this.codec.set(null);
     this.section.set(null);
     this.sectionIndex.set(null);
@@ -145,9 +172,14 @@ export class Store {
   async selectVersion(id: number) {
     this.versionId.set(id);
     this.resetDerived();
+    // Default partner: the previous bounce; for a reference, the latest bounce.
     const list = this.versions();
     const idx = list.findIndex((v) => v.id === id);
-    this.compareWith.set(idx > 0 ? list[idx - 1].id : list.find((v) => v.id !== id)?.id ?? null);
+    const others = list.filter((v) => v.id !== id);
+    const bounces = others.filter((v) => v.kind !== 'reference');
+    const prev = list.slice(0, Math.max(idx, 0)).reverse().find((v) => v.kind !== 'reference');
+    const partner = list[idx]?.kind === 'reference' ? bounces.at(-1) : prev ?? bounces[0];
+    this.compareWith.set((partner ?? others[0])?.id ?? null);
     try {
       this.report.set(await api.getReport(id));
       if (this.tab() === 'compare') await this.runCompare();
@@ -156,7 +188,7 @@ export class Store {
     }
   }
 
-  async pickFiles() {
+  async pickFiles(kind?: Kind) {
     if (!inTauri()) return;
     const { open } = await import('@tauri-apps/plugin-dialog');
     const picked = await open({
@@ -164,10 +196,10 @@ export class Store {
       filters: [{ name: 'Audio', extensions: ['wav', 'wave', 'flac', 'aif', 'aiff', 'mp3', 'm4a'] }],
     });
     if (!picked) return;
-    await this.addFiles(Array.isArray(picked) ? picked : [picked]);
+    await this.addFiles(Array.isArray(picked) ? picked : [picked], kind);
   }
 
-  async addFiles(paths: string[]) {
+  async addFiles(paths: string[], kind?: Kind) {
     const audio = paths.filter((p) => /\.(wav|wave|flac|aiff?|mp3|m4a)$/i.test(p));
     if (!audio.length) {
       this.error.set('Drop WAV, FLAC, AIFF, MP3 or M4A files.');
@@ -188,7 +220,7 @@ export class Store {
       const name = path.split(/[\\/]/).pop()!;
       this.analyzing.update((a) => [...a, name]);
       try {
-        const v = await api.addVersion(pid, path);
+        const v = await api.addVersion(pid, path, kind);
         this.versions.update((list) => [...list, v]);
         lastId = v.id;
       } catch (e) {
@@ -198,7 +230,15 @@ export class Store {
       }
     }
     await this.refreshProjects();
-    if (lastId != null) await this.selectVersion(lastId);
+    if (lastId == null) return;
+    if (kind === 'reference' && this.versionId() != null) {
+      // Keep the current bounce in view and compare it with the new reference.
+      this.compareWith.set(lastId);
+      this.tab.set('compare');
+      await this.runCompare();
+    } else {
+      await this.selectVersion(lastId);
+    }
   }
 
   async updateVersion(label: string, kind: Kind) {
@@ -234,10 +274,17 @@ export class Store {
     if (a == null || b == null) return;
     this.comparing.set(true);
     this.comparison.set(null);
+    this.refComparison.set(null);
     try {
-      const [c, ref] = await Promise.all([api.compare(a, b), api.getReport(a)]);
-      this.compareReport.set(ref);
-      this.comparison.set(c);
+      if (this.comparingReference()) {
+        const [c, ref] = await Promise.all([api.compareReference(b, a), api.getReport(a)]);
+        this.compareReport.set(ref);
+        this.refComparison.set(c);
+      } else {
+        const [c, ref] = await Promise.all([api.compare(a, b), api.getReport(a)]);
+        this.compareReport.set(ref);
+        this.comparison.set(c);
+      }
     } catch (e) {
       this.fail(e);
     } finally {

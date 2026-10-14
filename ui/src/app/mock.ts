@@ -26,6 +26,9 @@ export async function mockInvoke(cmd: string, args: Record<string, any>): Promis
     case 'get_settings':
       return d.settings ?? { provider: 'anthropic', anthropic_model: 'claude-sonnet-5-5', openai_model: '', ollama_model: '', ollama_url: 'http://localhost:11434', ffmpeg_path: '', target_lufs: -14, max_tool_rounds: 8, has_anthropic_key: false, has_openai_key: false, ffmpeg_found: true, keyring_ok: true };
     case 'get_chat': return d.chat[args['projectId']] ?? [];
+    case 'list_genre_presets': return d.presets ?? [];
+    case 'update_project_context': return { ...d.projects.find((p: any) => p.id === args['id']), genre: args['genre'], key: args['key'] };
+    case 'compare_reference': return d.reference_compare ?? null;
     case 'list_models': return ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
     case 'ai_chat':
       await delay(800);

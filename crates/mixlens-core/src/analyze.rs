@@ -2,7 +2,6 @@
 
 use crate::audio::Audio;
 use crate::dsp::{self, amp_db, pow_db, Chain};
-use crate::findings;
 use crate::report::*;
 use crate::{Error, Result};
 use ebur128::{EbuR128, Mode};
@@ -71,10 +70,12 @@ pub fn analyze(audio: &Audio, targets: &Targets) -> Result<Report> {
         sections,
         dither,
         findings: vec![],
+        genre_match: None,
+        key_analysis: None,
         analysis_ms: 0,
         kblocks,
     };
-    report.findings = findings::evaluate(&report, targets);
+    crate::refresh_findings(&mut report, targets);
     report.analysis_ms = t0.elapsed().as_millis() as u64;
     Ok(report)
 }
@@ -322,24 +323,26 @@ fn spectrum(a: &Audio) -> Spectrum {
     let (f, p) = dsp::welch(&mid, fs, nper);
     let (tilt, third) = third_octave(&f, &p, fs);
     let total = band_sum(&f, &p, 20.0, 20000.0);
+    // Finer resolution (~0.7 Hz) so adjacent bass notes separate.
+    let n = if fs > 60000.0 { 131072 } else { 65536 };
+    let (fl, pl) = dsp::welch(&mid, fs, n);
+    let lf_peaks = tonal_peaks(&fl, &pl, 30.0, 300.0);
+    let mid_peaks = tonal_peaks(&fl, &pl, 200.0, 800.0);
     Spectrum {
         tilt_db_per_oct: tilt,
         third_octave: third,
         octave_share: octave_shares(&f, &p),
-        lf_peaks: {
-            // Finer resolution (~0.7 Hz) so adjacent bass notes separate.
-            let n = if fs > 60000.0 { 131072 } else { 65536 };
-            let (fl, pl) = dsp::welch(&mid, fs, n);
-            lf_peaks(&fl, &pl)
-        },
+        lf_peaks,
+        mid_peaks,
         sub30_share_db: pow_db(band_sum(&f, &p, 1.0, 30.0) / total),
         sibilance: Sibilance { median_db: 0.0, p99_db: 0.0, max_db: 0.0 },
     }
 }
 
-/// Narrow low-frequency peaks (30–300 Hz) with ≥ 6 dB prominence, labelled with note names.
-fn lf_peaks(f: &[f64], p: &[f64]) -> Vec<LfPeak> {
-    let idx: Vec<usize> = (0..f.len()).filter(|&i| f[i] > 30.0 && f[i] < 300.0).collect();
+/// Narrow peaks between `lo` and `hi` Hz with ≥ 6 dB prominence, labelled with note names.
+/// Keeps the 12 most prominent, in frequency order.
+pub fn tonal_peaks(f: &[f64], p: &[f64], lo: f64, hi: f64) -> Vec<LfPeak> {
+    let idx: Vec<usize> = (0..f.len()).filter(|&i| f[i] > lo && f[i] < hi).collect();
     if idx.len() < 3 {
         return vec![];
     }
@@ -371,11 +374,19 @@ fn lf_peaks(f: &[f64], p: &[f64]) -> Vec<LfPeak> {
         }
         let prom = d[k] - lmin.max(rmin);
         if prom >= 6.0 {
-            let hz = f[idx[k]];
-            out.push(LfPeak { hz, above_median_db: d[k] - med, note: dsp::note_name(hz) });
+            // Parabolic interpolation on the dB bins: sub-bin frequency, accurate enough for cents.
+            let (a, b, c) = (d[k - 1], d[k], d[k + 1]);
+            let den = a - 2.0 * b + c;
+            let delta = if den.abs() > 1e-12 { (0.5 * (a - c) / den).clamp(-0.5, 0.5) } else { 0.0 };
+            let hz = f[idx[k]] + delta * (f[idx[k + 1]] - f[idx[k]]);
+            let level = b - 0.25 * (a - c) * delta;
+            out.push((prom, LfPeak { hz, above_median_db: level - med, note: dsp::note_name(hz) }));
         }
     }
+    out.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
     out.truncate(12);
+    let mut out: Vec<LfPeak> = out.into_iter().map(|(_, p)| p).collect();
+    out.sort_by(|x, y| x.hz.partial_cmp(&y.hz).unwrap());
     out
 }
 

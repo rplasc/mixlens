@@ -175,6 +175,67 @@ fn agent_loop_all_providers() {
 }
 
 #[test]
+fn migrates_old_database() {
+    let dir = tempdir::TempDir::new();
+    let path = dir.0.join("old.db");
+    {
+        // Schema as shipped before song context existed.
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+             INSERT INTO projects (name) VALUES ('Old song');",
+        )
+        .unwrap();
+    }
+    for _ in 0..2 {
+        // Opening twice checks the migration is idempotent.
+        let c = db::open(&path).unwrap();
+        let p = &db::list_projects(&c).unwrap()[0];
+        assert_eq!(p.name, "Old song");
+        assert!(p.genre.is_none() && p.key.is_none());
+    }
+    let c = db::open(&path).unwrap();
+    let key = mixlens_core::MusicalKey::parse("F#m");
+    db::set_project_context(&c, 1, Some("hiphop"), key.as_ref()).unwrap();
+    let p = db::get_project(&c, 1).unwrap().unwrap();
+    assert_eq!(p.genre.as_deref(), Some("hiphop"));
+    assert_eq!(p.key, key);
+    let t = crate::state::targets_in(&c, 1, Kind::Mix);
+    assert_eq!(t.genre.map(|g| g.id), Some("hiphop".into()));
+    assert_eq!(t.key, key);
+}
+
+#[test]
+fn reference_versions() {
+    use crate::commands::guess_kind;
+    assert_eq!(guess_kind("Artist - Song (ref)"), Kind::Reference);
+    assert_eq!(guess_kind("ref_track"), Kind::Reference);
+    assert_eq!(guess_kind("song_master_v3"), Kind::Master);
+    assert_eq!(guess_kind("refrain_mix"), Kind::Mix);
+
+    let (inner, dir) = setup();
+    let r_path = dir.0.join("other_song_reference.wav");
+    write_wav(&r_path, 110.0, 0.6, 6.0);
+    {
+        let c = inner.db.lock().unwrap();
+        let t = Targets { kind: Kind::Reference, ..Targets::default() };
+        let (_, r) = analyze_file(&r_path, &t).unwrap();
+        assert_eq!(r.findings.len(), 1, "references skip the mix/master rules");
+        let v = db::insert_version(&c, 1, "ref", r_path.to_str().unwrap(), Kind::Reference, &r).unwrap();
+        assert_eq!(db::get_version(&c, v.id).unwrap().unwrap().kind, Kind::Reference);
+    }
+    // Either argument order: the reference is detected by kind, no null test runs.
+    for args in [serde_json::json!({"version_a": 3, "version_b": 1}), serde_json::json!({"version_a": 1, "version_b": 3})] {
+        let out = crate::ai::tools::execute(&inner, "compare_versions", &args).unwrap();
+        assert_eq!(out["mode"], "reference");
+        assert_eq!(out["reference"]["id"], 3);
+        assert!(out.get("residual_rel_db").is_none());
+    }
+    let out = crate::ai::tools::execute(&inner, "compare_versions", &serde_json::json!({"version_a": 1, "version_b": 2})).unwrap();
+    assert_eq!(out["mode"], "null_test");
+}
+
+#[test]
 fn text_tool_call_parsing() {
     use crate::ai::{providers::text_tool_calls, tools};
     let defs = tools::definitions();
