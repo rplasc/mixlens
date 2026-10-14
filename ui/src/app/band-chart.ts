@@ -30,7 +30,7 @@ import { hz, signed } from './fmt';
     svg { display: block; }
     .grid { stroke: var(--line-soft); }
     .grid.zero { stroke: var(--muted); opacity: 0.6; }
-    .axis { fill: var(--faint); font-size: 11px; }
+    .axis { fill: var(--faint); font-size: var(--text-caption); }
     .bar.a { fill: var(--a); opacity: 0.85; }
     .bar.a.flag { fill: var(--warn); opacity: 1; }
     .bar.b { fill: var(--b); opacity: 0.85; }

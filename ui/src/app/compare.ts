@@ -11,12 +11,12 @@ import { Store } from './store';
   template: `
     <svg [attr.width]="w()" height="34" role="img" aria-label="Where the two versions differ">
       @for (c of cells(); track $index) {
-        <rect [attr.x]="c.x" y="2" [attr.width]="c.w" height="22" [attr.fill]="c.fill"><title>{{ c.title }}</title></rect>
+        <rect [attr.x]="c.x" y="2" [attr.width]="c.w" height="22" [style.fill]="c.fill"><title>{{ c.title }}</title></rect>
       }
       <text x="0" y="17" class="axis">Diff</text>
     </svg>
   `,
-  styles: `:host { display: block; width: 100%; } svg { display: block; } .axis { fill: var(--faint); font-size: 11px; }`,
+  styles: `:host { display: block; width: 100%; } svg { display: block; } .axis { fill: var(--faint); font-size: var(--text-caption); }`,
 })
 export class DiffStrip implements OnInit, OnDestroy {
   readonly windows = input.required<number[]>();
@@ -38,7 +38,8 @@ export class DiffStrip implements OnInit, OnDestroy {
     const px = (t: number) => this.left + (t / span) * (this.w() - this.left);
     return this.windows().map((d, i) => {
       const t0 = i * this.windowS();
-      const fill = d <= -60 ? '#2b353e' : d <= -20 ? `rgba(124,200,216,${0.25 + ((d + 60) / 40) * 0.35})` : d <= -6 ? '#f0a04b' : '#e8665f';
+      const mix = Math.round((0.25 + ((d + 60) / 40) * 0.35) * 100);
+      const fill = d <= -60 ? 'var(--line-soft)' : d <= -20 ? `color-mix(in srgb, var(--b) ${mix}%, transparent)` : d <= -6 ? 'var(--warn)' : 'var(--err)';
       const label = d <= -100 ? 'identical (silence)' : d <= -60 ? `identical (${num(d, 0)} dB)` : `${num(d)} dB difference`;
       return { x: px(t0), w: Math.max(1, px(t0 + this.windowS()) - px(t0) - 0.5), fill, title: `${clock(t0)}: ${label}` };
     });
@@ -49,6 +50,7 @@ export class DiffStrip implements OnInit, OnDestroy {
   selector: 'ml-compare',
   imports: [FormsModule, LoudnessBridge, DiffStrip, BandChart],
   template: `
+    @if (store.otherVersions().length) {
     <div class="picker">
       <label>
         <span class="muted">Compare</span>
@@ -68,8 +70,17 @@ export class DiffStrip implements OnInit, OnDestroy {
       </button>
     </div>
 
+    }
+
     @if (!store.otherVersions().length) {
-      <p class="empty">Add another version of this song to compare them.</p>
+      <div class="first">
+        <h2>Nothing to compare yet</h2>
+        <p class="muted">Add another bounce of this song to see exactly what changed, second by second. Or add a finished reference track to match its level and tonal balance.</p>
+        <div class="first-actions">
+          <button class="primary" (click)="store.pickFiles()">Add files</button>
+          <button (click)="store.pickFiles('reference')">Add reference</button>
+        </div>
+      </div>
     } @else if (store.comparing()) {
       <p class="empty">{{ store.comparingReference() ? 'Comparing with the reference…' : 'Aligning the files and running the null test…' }}</p>
     } @else if (rc(); as rc) {
@@ -202,18 +213,20 @@ export class DiffStrip implements OnInit, OnDestroy {
   styles: `
     :host { display: flex; flex-direction: column; gap: 22px; }
     .picker { display: flex; align-items: center; gap: 14px; }
+    .first { max-width: 60ch; display: flex; flex-direction: column; gap: var(--space-xs); }
+    .first-actions { display: flex; gap: var(--space-xs); margin-top: var(--space-xs); }
     .picker label { display: flex; align-items: center; gap: 8px; }
     .empty { color: var(--muted); padding: 30px 0; }
-    .verdict { font-size: 16px; max-width: 80ch; }
-    .legend { display: flex; gap: 18px; font-size: 12px; margin-bottom: 4px; }
+    .verdict { font-size: var(--text-subhead); max-width: 80ch; }
+    .legend { display: flex; gap: 18px; font-size: var(--text-caption); margin-bottom: 4px; }
     .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
     .sw.a { background: var(--a); }
     .sw.b { background: var(--b); }
-    .small { font-size: 12px; }
+    .small { font-size: var(--text-caption); }
     h2 { margin-bottom: 6px; }
     .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
-    .regions .oct { font-size: 12px; }
-    @media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } }
+    .regions .oct { font-size: var(--text-caption); }
+    @container (max-width: 819px) { .cols { grid-template-columns: 1fr; } }
   `,
 })
 export class Compare {

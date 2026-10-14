@@ -8,11 +8,15 @@ interface Series { values: number[]; hop: number; color: 'a' | 'b' }
 @Component({
   selector: 'ml-loudness-bridge',
   template: `
-    <svg [attr.width]="w()" [attr.height]="H" (mousemove)="move($event)" (mouseleave)="hover.set(null)" role="img"
+    <svg [attr.width]="w()" [attr.height]="H" (mousemove)="move($event)" (mouseleave)="hover.set(null)" [attr.role]="clickable() ? 'group' : 'img'"
          [attr.aria-label]="'Short-term loudness over time. Integrated ' + num(integrated()) + ' LUFS'">
       @for (s of sectionRects(); track $index) {
-        <g class="sec" [class.selected]="selected() === $index" [class.clickable]="clickable()" (click)="pick($index)">
+        <g class="sec" [class.selected]="selected() === $index" [class.clickable]="clickable()" (click)="pick($index)"
+           [attr.tabindex]="s.focusable ? 0 : null" [attr.role]="s.focusable ? 'button' : null"
+           [attr.aria-label]="s.focusable ? s.name : null" [attr.aria-pressed]="s.focusable ? selected() === $index : null"
+           (keydown.enter)="pick($index)" (keydown.space)="$event.preventDefault(); pick($index)">
           <rect [attr.x]="s.x" y="0" [attr.width]="s.w" [attr.height]="top + plotH" [attr.class]="'band ' + s.kind" />
+          @if ($index > 0) { <line [attr.x1]="s.x" [attr.x2]="s.x" y1="0" [attr.y2]="top + plotH" class="edge" /> }
           @if (s.w > 54) {
             <text [attr.x]="s.x + 6" y="13" class="sec-label">{{ s.label }}</text>
             <text [attr.x]="s.x + 6" y="27" class="sec-value">{{ s.value }}</text>
@@ -29,9 +33,9 @@ interface Series { values: number[]; hop: number; color: 'a' | 'b' }
       }
       @if (integrated() !== null) {
         <line [attr.x1]="left" [attr.x2]="w()" [attr.y1]="y(integrated()!)" [attr.y2]="y(integrated()!)" class="ref" />
-        <text [attr.x]="w() - 4" [attr.y]="y(integrated()!) - 5" class="ref-label" text-anchor="end">Integrated {{ num(integrated()) }}</text>
+        <text [attr.x]="w() - 4" [attr.y]="y(integrated()!) - 5" class="ref-label" text-anchor="end">Integrated {{ num(integrated()) }}{{ onTarget() ? ', on target' : '' }}</text>
       }
-      @if (target() !== null) {
+      @if (target() !== null && !onTarget()) {
         <line [attr.x1]="left" [attr.x2]="w()" [attr.y1]="y(target()!)" [attr.y2]="y(target()!)" class="target" />
         <text [attr.x]="left + 4" [attr.y]="y(target()!) - 5" class="target-label">Streaming target {{ num(target(), 0) }}</text>
       }
@@ -54,29 +58,30 @@ interface Series { values: number[]; hop: number; color: 'a' | 'b' }
     svg { display: block; }
     .band { fill: transparent; }
     text, .grid, .area, .trace, .ref, .target, .cursor, .tip { pointer-events: none; }
-    .band.loud { fill: rgba(233, 196, 106, 0.07); }
-    .band.quiet { fill: rgba(255, 255, 255, 0.012); }
-    .band.silence { fill: rgba(232, 102, 95, 0.16); }
+    .edge { stroke: var(--line); stroke-width: 1; pointer-events: none; }
+    .band.silence { fill: color-mix(in srgb, var(--err) 16%, transparent); }
     .sec.clickable { cursor: pointer; }
     .sec.clickable:hover .band { stroke: var(--line); }
     .sec.selected .band { stroke: var(--a); stroke-width: 1.5; }
-    .sec-label { fill: var(--muted); font-size: 11px; }
-    .sec-value { fill: var(--ink); font-size: 12px; font-weight: 600; }
+    .sec:focus { outline: none; }
+    .sec:focus-visible .band { stroke: var(--focus); stroke-width: 2; }
+    .sec-label { fill: var(--muted); font-size: var(--text-caption); }
+    .sec-value { fill: var(--ink); font-size: var(--text-caption); font-weight: 600; }
     .grid { stroke: var(--line-soft); stroke-width: 1; }
-    .axis { fill: var(--faint); font-size: 11px; }
-    .area.a { fill: rgba(233, 196, 106, 0.22); }
-    .area.b { fill: rgba(124, 200, 216, 0.12); }
+    .axis { fill: var(--faint); font-size: var(--text-caption); }
+    .area.a { fill: color-mix(in srgb, var(--a) 22%, transparent); }
+    .area.b { fill: color-mix(in srgb, var(--b) 12%, transparent); }
     .trace { fill: none; stroke-width: 1.6; stroke-linejoin: round; }
     .trace.a { stroke: var(--a); }
     .trace.b { stroke: var(--b); }
     .ref { stroke: var(--ink); stroke-dasharray: 5 4; opacity: 0.55; }
-    .ref-label { fill: var(--ink); font-size: 11px; opacity: 0.8; }
+    .ref-label { fill: var(--ink); font-size: var(--text-caption); opacity: 0.8; }
     .target { stroke: var(--ok); stroke-dasharray: 2 4; opacity: 0.8; }
-    .target-label { fill: var(--ok); font-size: 11px; }
+    .target-label { fill: var(--ok); font-size: var(--text-caption); }
     .cursor { stroke: var(--ink); opacity: 0.4; }
     .tip { fill: var(--raised); stroke: var(--line); }
-    .tip-t { fill: var(--muted); font-size: 11px; }
-    .tip-v { font-size: 12px; font-weight: 600; }
+    .tip-t { fill: var(--muted); font-size: var(--text-caption); }
+    .tip-v { font-size: var(--text-caption); font-weight: 600; }
     .tip-v.a { fill: var(--a); }
     .tip-v.b { fill: var(--b); }
   `,
@@ -92,6 +97,12 @@ export class LoudnessBridge implements OnInit, OnDestroy {
   readonly selected = input<number | null>(null);
   readonly clickable = input<boolean>(false);
   readonly sectionClick = output<number>();
+  /** Integrated sits on the target line: draw one line, not two overlapping ones. */
+  readonly onTarget = computed(() => {
+    const i = this.integrated();
+    const t = this.target();
+    return i !== null && t !== null && Math.abs(i - t) < 0.5;
+  });
 
   readonly H = 214;
   readonly top = 36;
@@ -158,6 +169,9 @@ export class LoudnessBridge implements OnInit, OnDestroy {
       kind: s.kind,
       label: s.kind === 'loud' ? 'Loud' : s.kind === 'quiet' ? 'Quiet' : 'Silent',
       value: s.kind === 'silence' ? '' : this.x(s.end_s) - this.x(s.start_s) > 96 ? `${num(s.lufs)} LUFS` : num(s.lufs),
+      // Keyboard and screen-reader access to the same "measure this section" click.
+      focusable: this.clickable() && s.kind !== 'silence',
+      name: `Measure ${s.kind} section, ${clock(s.start_s)} to ${clock(s.end_s)}, ${num(s.lufs)} LUFS`,
     })),
   );
 

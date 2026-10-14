@@ -1,4 +1,4 @@
-import { Injectable, computed, signal } from '@angular/core';
+import { Injectable, computed, effect, signal } from '@angular/core';
 import {
   api, ChatMessage, CodecResult, Comparison, errorText, GenrePreset, inTauri, Kind, MusicalKey, Platform, Project,
   ReferenceComparison, ReportEnvelope, SectionAnalysis, SettingsView, StreamingReport, VersionSummary,
@@ -13,6 +13,22 @@ const TOOL_LABELS: Record<string, string> = {
   codec_check: 'Encoding test files',
   streaming_check: 'Checking streaming platforms',
 };
+
+/** One-time hints, remembered on this device. Storage can be unavailable; then a hint just shows again. */
+function readFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+function writeFlag(key: string) {
+  try {
+    localStorage.setItem(key, '1');
+  } catch {
+    // Not stored: the hint reappears next launch, which is harmless.
+  }
+}
 
 @Injectable({ providedIn: 'root' })
 export class Store {
@@ -47,7 +63,12 @@ export class Store {
   readonly chat = signal<ChatMessage[]>([]);
   readonly chatBusy = signal(false);
   readonly activity = signal<string | null>(null);
-  readonly chatOpen = signal(true);
+  /** Closed until a provider is set up; see the constructor. */
+  readonly chatOpen = signal(false);
+  /** The first-analysis hint explaining mix vs master rules has been dismissed. */
+  readonly kindTipSeen = signal(readFlag('mixlens.tip.kind'));
+  /** The song list drawer, used only when the window is too narrow for the sidebar. */
+  readonly navOpen = signal(false);
 
   readonly project = computed(() => this.projects().find((p) => p.id === this.projectId()) ?? null);
   readonly version = computed(() => this.versions().find((v) => v.id === this.versionId()) ?? null);
@@ -66,6 +87,31 @@ export class Store {
     const kind = (id: number | null) => this.versions().find((v) => v.id === id)?.kind;
     return kind(this.versionId()) === 'reference' || kind(this.compareWith()) === 'reference';
   });
+
+  dismissKindTip() {
+    this.kindTipSeen.set(true);
+    writeFlag('mixlens.tip.kind');
+  }
+
+  /** The assistant has a provider and model it can use. */
+  readonly assistantReady = computed(() => {
+    const s = this.settings();
+    if (!s) return false;
+    if (s.provider === 'anthropic') return s.has_anthropic_key;
+    if (s.provider === 'openai') return s.has_openai_key && !!s.openai_model;
+    return !!s.ollama_model;
+  });
+
+  constructor() {
+    // Open the assistant when it becomes usable: at launch, or right after a key is added in Settings.
+    // In a narrow window it would cover the measurements, so it waits to be opened.
+    let wasReady = false;
+    effect(() => {
+      const ready = this.assistantReady();
+      if (ready && !wasReady && matchMedia('(min-width: 1000px)').matches) this.chatOpen.set(true);
+      wasReady = ready;
+    });
+  }
 
   async init() {
     try {
@@ -232,7 +278,7 @@ export class Store {
   async addFiles(paths: string[], kind?: Kind) {
     const audio = paths.filter((p) => /\.(wav|wave|flac|aiff?|mp3|m4a)$/i.test(p));
     if (!audio.length) {
-      this.error.set('Drop WAV, FLAC, AIFF, MP3 or M4A files.');
+      this.error.set("MixLens can't read those files. Drop WAV, FLAC, AIFF, MP3 or M4A.");
       return;
     }
     let pid = this.projectId();
@@ -295,6 +341,13 @@ export class Store {
     await this.refreshProjects();
     const last = list[list.length - 1];
     if (last) await this.selectVersion(last.id);
+  }
+
+  /** Open the Compare tab against a reference track. */
+  async compareWithReference(id: number) {
+    this.compareWith.set(id);
+    this.tab.set('compare');
+    await this.runCompare();
   }
 
   // ---------- measurements ----------

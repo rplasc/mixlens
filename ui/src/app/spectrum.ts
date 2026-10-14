@@ -111,16 +111,16 @@ const ROLE_LABELS: Record<KeyRole, string> = {
   `,
   styles: `
     :host { display: flex; flex-direction: column; gap: 22px; }
-    h2 { margin-bottom: 4px; }
+    h2 { margin-bottom: var(--space-2xs); }
     h2.sub { margin-top: 22px; }
-    .lead { font-size: 12px; margin-bottom: 10px; max-width: 75ch; }
+    .lead { font-size: var(--text-caption); margin-bottom: 10px; max-width: 75ch; }
     .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
     .meter { width: 30%; }
     .meter span { display: block; height: 6px; background: var(--a); opacity: 0.7; border-radius: 3px; }
     .chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-    .chips li { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 3px 8px; font-size: 12px; }
+    .chips li { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 3px 8px; font-size: var(--text-caption); }
     .chips li.root { border-color: var(--a); }
-    @media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } }
+    @container (max-width: 819px) { .cols { grid-template-columns: 1fr; } }
   `,
 })
 export class Spectrum {

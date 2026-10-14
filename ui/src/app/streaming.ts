@@ -1,6 +1,7 @@
 import { Component, ElementRef, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
 import { Finding, PlatformResult } from './api';
 import { num, signed } from './fmt';
+import { Sev } from './severity';
 import { Store } from './store';
 
 /** How far each platform turns the track up or down; hatched where a boost isn't applied. */
@@ -38,9 +39,9 @@ import { Store } from './store';
     svg { display: block; overflow: visible; }
     .grid { stroke: var(--line-soft); }
     .grid.zero { stroke: var(--muted); }
-    .axis { fill: var(--faint); font-size: 11px; }
-    .name { fill: var(--ink); font-size: 12px; }
-    .value { fill: var(--muted); font-size: 12px; }
+    .axis { fill: var(--faint); font-size: var(--text-caption); }
+    .name { fill: var(--ink); font-size: var(--text-caption); }
+    .value { fill: var(--muted); font-size: var(--text-caption); }
     .hit { fill: transparent; }
     .row:hover .hit { fill: var(--raised); }
     .up { fill: var(--gain-up); }
@@ -114,7 +115,7 @@ export class GainChart implements OnInit, OnDestroy {
 
 @Component({
   selector: 'ml-streaming',
-  imports: [GainChart],
+  imports: [GainChart, Sev],
   template: `
     @if (s(); as s) {
       <p class="verdict">{{ verdict() }}</p>
@@ -137,7 +138,7 @@ export class GainChart implements OnInit, OnDestroy {
           <h2>Clipping and delivery</h2>
           <ul class="findings">
             @for (f of s.general; track f.code) {
-              <li [attr.data-sev]="f.severity"><span class="dot" aria-hidden="true"></span>
+              <li><ml-sev [sev]="f.severity" />
                 <div><strong>{{ f.title }}</strong><p>{{ f.detail }}</p></div></li>
             }
           </ul>
@@ -177,7 +178,7 @@ export class GainChart implements OnInit, OnDestroy {
           @for (p of s.platforms; track p.id) {
             <article class="card" [attr.data-sev]="p.status">
               <header>
-                <span class="dot" aria-hidden="true"></span>
+                <ml-sev [sev]="p.status" [announce]="false" />
                 <h3>{{ p.name }}</h3>
                 <span class="status">{{ statusLabel(p) }}</span>
                 @if (p.id === mainId()) { <span class="tag main">Main platform</span> }
@@ -207,7 +208,7 @@ export class GainChart implements OnInit, OnDestroy {
               }
               <ul class="findings compact">
                 @for (c of shownChecks(p.checks); track c.code) {
-                  <li [attr.data-sev]="c.severity"><span class="dot" aria-hidden="true"></span>
+                  <li><ml-sev [sev]="c.severity" />
                     <div><strong>{{ c.title }}</strong><p>{{ c.detail }}</p></div></li>
                 }
               </ul>
@@ -223,10 +224,10 @@ export class GainChart implements OnInit, OnDestroy {
   styles: `
     :host { display: flex; flex-direction: column; gap: 22px; }
     h2 { margin-bottom: 6px; }
-    .verdict { font-size: 16px; max-width: 80ch; }
-    .lead { font-size: 12px; margin-bottom: 10px; max-width: 80ch; }
+    .verdict { font-size: var(--text-subhead); max-width: 80ch; }
+    .lead { font-size: var(--text-caption); margin-bottom: 10px; max-width: 80ch; }
     .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-    .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+    .legend { display: flex; gap: 14px; font-size: var(--text-caption); color: var(--muted); }
     .sw { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
     .sw.up { background: var(--gain-up); }
     .sw.down { background: var(--gain-down); }
@@ -235,34 +236,29 @@ export class GainChart implements OnInit, OnDestroy {
     .findings { list-style: none; margin: 0; padding: 0; }
     .findings li { display: grid; grid-template-columns: 14px 1fr; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
     .findings p { color: var(--muted); max-width: 70ch; }
-    .findings.compact li { padding: 6px 0; font-size: 13px; }
+    .findings.compact li { padding: 6px 0; font-size: var(--text-body); }
     .findings.compact li:last-child { border-bottom: none; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; background: var(--muted); }
-    [data-sev='error'] > .dot, [data-sev='error'] > header > .dot { background: var(--err); }
-    [data-sev='warn'] > .dot, [data-sev='warn'] > header > .dot { background: var(--warn); }
-    [data-sev='ok'] > .dot, [data-sev='ok'] > header > .dot { background: var(--ok); }
-    [data-sev='info'] > .dot, [data-sev='info'] > header > .dot { background: var(--info); }
+    .findings ml-sev { margin-top: 5px; }
     .codec-head { display: flex; align-items: center; justify-content: space-between; }
     .codec-head h2 { margin: 0; }
-    .codec > p { font-size: 12px; margin: 4px 0 8px; }
+    .codec > p { font-size: var(--text-caption); margin: 4px 0 8px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: var(--radius-m); background: var(--panel); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
     .card header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .card header .dot { margin-top: 0; }
-    .card h3 { color: var(--ink); font-size: 14px; }
-    .status { font-size: 12px; color: var(--muted); }
-    .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; }
+    .card h3 { color: var(--ink); font-family: var(--font-display); font-size: var(--text-body); text-transform: none; letter-spacing: -0.01em; }
+    .status { font-size: var(--text-caption); color: var(--muted); }
+    .tag { font-size: var(--text-caption); color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; }
     .tag.main { color: var(--a); border-color: var(--a); }
-    .meta { font-size: 12px; color: var(--faint); }
+    .meta { font-size: var(--text-caption); color: var(--faint); }
     .summary { max-width: 70ch; }
     .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0; }
-    .nums dt { font-size: 11px; color: var(--faint); }
-    .nums dd { margin: 0; font-size: 18px; font-family: var(--font-display); }
-    .nums dd span { font-size: 12px; color: var(--muted); }
-    .nums dd.small { font-size: 11px; font-family: var(--font); }
-    .modes { font-size: 12px; }
-    .note { font-size: 12px; color: var(--faint); }
-    @media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } }
+    .nums dt { font-size: var(--text-caption); color: var(--faint); }
+    .nums dd { margin: 0; font-size: var(--num-s); font-family: var(--font-display); }
+    .nums dd span { font-size: var(--text-caption); color: var(--muted); }
+    .nums dd.small { font-size: var(--text-caption); font-family: var(--font); }
+    .modes { font-size: var(--text-caption); }
+    .note { font-size: var(--text-caption); color: var(--faint); }
+    @container (max-width: 819px) { .cols { grid-template-columns: 1fr; } }
   `,
 })
 export class Streaming implements OnInit {

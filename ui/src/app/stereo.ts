@@ -49,18 +49,18 @@ import { Store } from './store';
   `,
   styles: `
     :host { display: flex; flex-direction: column; gap: 22px; }
-    h2 { margin-bottom: 4px; }
-    .lead { font-size: 12px; margin-bottom: 12px; }
+    h2 { margin-bottom: var(--space-2xs); }
+    .lead { font-size: var(--text-caption); margin-bottom: var(--space-s); }
     .gauge { max-width: 640px; }
-    .scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); margin-bottom: 4px; }
+    .scale { display: flex; justify-content: space-between; font-size: var(--text-caption); color: var(--faint); margin-bottom: var(--space-2xs); }
     .track { position: relative; height: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }
     .zero { position: absolute; left: 50%; top: 2px; bottom: 2px; width: 1px; background: var(--muted); }
-    .span { position: absolute; top: 4px; bottom: 4px; background: rgba(233, 196, 106, 0.35); border-radius: 5px; }
+    .span { position: absolute; top: 4px; bottom: 4px; background: color-mix(in srgb, var(--a) 35%, transparent); border-radius: 5px; }
     .mark { position: absolute; top: -3px; width: 2px; height: 22px; margin-left: -1px; }
     .mark.min { background: var(--muted); }
     .mark.min.bad { background: var(--warn); }
     .mark.med { background: var(--a); }
-    .legend { font-size: 12px; margin-top: 8px; }
+    .legend { font-size: var(--text-caption); margin-top: var(--space-xs); }
   `,
 })
 export class Stereo {

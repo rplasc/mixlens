@@ -1,4 +1,5 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { Kind, MusicalKey } from './api';
 import { Assistant } from './assistant';
 import { Compare } from './compare';
@@ -11,77 +12,89 @@ import { Stereo } from './stereo';
 import { Streaming } from './streaming';
 import { Store, Tab } from './store';
 
+/** Wide enough for the assistant to sit beside the main column; matches the 999 px breakpoint. */
+const WIDE = '(min-width: 1000px)';
+
 @Component({
   selector: 'app-root',
-  imports: [Sidebar, Overview, Spectrum, Stereo, Streaming, Compare, Assistant, Settings],
+  imports: [NgTemplateOutlet, Sidebar, Overview, Spectrum, Stereo, Streaming, Compare, Assistant, Settings],
+  host: { '(document:keydown.escape)': 'closeOverlays()' },
   template: `
-    <div class="shell" [class.chat-closed]="!store.chatOpen()">
-      <aside class="side"><ml-sidebar /></aside>
+    <div class="shell" [class.chat-closed]="!store.chatOpen()" [class.nav-open]="store.navOpen()">
+      <aside class="side" id="side-panel" aria-label="Songs and versions"><ml-sidebar /></aside>
 
       <main>
         @if (store.version(); as v) {
           <header class="vhead">
-            <div class="title">
-              <div class="songbar">
+            <div class="top">
+              <div class="lead">
+                <ng-container *ngTemplateOutlet="navToggle" />
                 <p class="song">{{ store.project()?.name }}</p>
-                @if (store.context().reference) { <span class="ctx-scope" title="A reference is another song, so it has its own genre and key">This reference</span> }
-                <label class="ctx">
-                  <span>Genre</span>
-                  <select (change)="setGenre($any($event.target).value)" [attr.aria-label]="scope() + ' genre'">
-                    <option value="" [selected]="!store.context().genre">Not set</option>
-                    @for (g of store.presets(); track g.id) {
-                      <option [value]="g.id" [selected]="g.id === store.context().genre">{{ g.name }}</option>
-                    }
-                  </select>
-                </label>
-                <label class="ctx">
-                  <span>Key</span>
-                  <select (change)="setTonic($any($event.target).value)" [attr.aria-label]="scope() + ' key'">
-                    <option value="" [selected]="!key()">Not set</option>
-                    @for (n of tonics; track $index) {
-                      <option [value]="$index" [selected]="key()?.tonic === $index">{{ n }}</option>
-                    }
-                  </select>
-                  <select (change)="setMode($any($event.target).value)" [disabled]="!key()" aria-label="Major or minor">
-                    <option value="major" [selected]="key()?.mode !== 'minor'">major</option>
-                    <option value="minor" [selected]="key()?.mode === 'minor'">minor</option>
-                  </select>
-                </label>
-                @if (store.context().reference) { <span class="ctx-song">Song: {{ songContext() }}</span> }
               </div>
+              <div class="actions">
+                <div class="seg" role="group" aria-label="Version type">
+                  <button [attr.aria-pressed]="v.kind === 'mix'" [class.on]="v.kind === 'mix'" (click)="setKind('mix')">Mix</button>
+                  <button [attr.aria-pressed]="v.kind === 'master'" [class.on]="v.kind === 'master'" (click)="setKind('master')">Master</button>
+                  <button [attr.aria-pressed]="v.kind === 'reference'" [class.on]="v.kind === 'reference'" (click)="setKind('reference')"
+                    title="Someone else's finished track, used for comparisons">Reference</button>
+                </div>
+                <button class="ghost toggle" [class.on]="store.chatOpen()" [attr.aria-pressed]="store.chatOpen()"
+                  (click)="store.chatOpen.set(!store.chatOpen())">Assistant</button>
+              </div>
+            </div>
+
+            <div class="name">
               @if (editing()) {
                 <form (submit)="saveLabel($event, labelBox.value)">
-                  <input #labelBox [value]="v.label" (blur)="saveLabel($event, labelBox.value)" (keydown.escape)="editing.set(false)" autofocus />
+                  <input #labelBox aria-label="Version name" [value]="v.label" (blur)="saveLabel($event, labelBox.value)" (keydown.escape)="editing.set(false)" autofocus />
                 </form>
               } @else {
-                <h1 (dblclick)="editing.set(true)" title="Double-click to rename">{{ v.label }}</h1>
+                <h1 (dblclick)="editing.set(true)">{{ v.label }}</h1>
+                <button class="ghost rename" (click)="editing.set(true)" [attr.aria-label]="'Rename ' + v.label">Rename</button>
               }
-              <p class="file" [title]="v.path">{{ v.file_name }}, {{ fmtFormat() }}, {{ time(v.duration_s) }}</p>
+              <p class="file" [title]="v.path">{{ fileLine() }}</p>
             </div>
-            <div class="actions">
-              <div class="seg" role="radiogroup" aria-label="Version type">
-                <button role="radio" [attr.aria-checked]="v.kind === 'mix'" [class.on]="v.kind === 'mix'" (click)="setKind('mix')">Mix</button>
-                <button role="radio" [attr.aria-checked]="v.kind === 'master'" [class.on]="v.kind === 'master'" (click)="setKind('master')">Master</button>
-                <button role="radio" [attr.aria-checked]="v.kind === 'reference'" [class.on]="v.kind === 'reference'" (click)="setKind('reference')"
-                  title="Someone else's finished track, used for comparisons">Reference</button>
-              </div>
-              @if (confirmDelete()) {
-                <button class="danger" (click)="store.deleteVersion(); confirmDelete.set(false)">Remove version</button>
-                <button class="ghost" (click)="confirmDelete.set(false)">Keep</button>
-              } @else {
-                <button class="ghost" (click)="confirmDelete.set(true)">Remove</button>
+
+            <div class="context">
+              @if (store.context().reference) { <span class="ctx-scope" title="A reference is another song, so it has its own genre and key">This reference</span> }
+              <label class="ctx">
+                <span>Genre</span>
+                <select (change)="setGenre($any($event.target).value)" [attr.aria-label]="scope() + ' genre'">
+                  <option value="" [selected]="!store.context().genre">Not set</option>
+                  @for (g of store.presets(); track g.id) {
+                    <option [value]="g.id" [selected]="g.id === store.context().genre">{{ g.name }}</option>
+                  }
+                </select>
+              </label>
+              <label class="ctx">
+                <span>Key</span>
+                <select (change)="setTonic($any($event.target).value)" [attr.aria-label]="scope() + ' key'">
+                  <option value="" [selected]="!key()">Not set</option>
+                  @for (n of tonics; track $index) {
+                    <option [value]="$index" [selected]="key()?.tonic === $index">{{ n }}</option>
+                  }
+                </select>
+                <select (change)="setMode($any($event.target).value)" [disabled]="!key()" aria-label="Major or minor">
+                  <option value="major" [selected]="key()?.mode !== 'minor'">major</option>
+                  <option value="minor" [selected]="key()?.mode === 'minor'">minor</option>
+                </select>
+              </label>
+              @if (store.context().reference) {
+                <span class="hint">Song: {{ songContext() }}</span>
+              } @else if (!key()) {
+                <span class="hint">Set the key to name bass notes.</span>
               }
-              <button class="ghost" (click)="store.chatOpen.set(!store.chatOpen())">{{ store.chatOpen() ? 'Hide assistant' : 'Assistant' }}</button>
             </div>
           </header>
 
-          <nav class="tabs" role="tablist">
+          <div class="tabs" role="tablist" aria-label="Views" (keydown)="tabKey($event)">
             @for (t of tabs; track t.id) {
-              <button role="tab" [attr.aria-selected]="store.tab() === t.id" [class.on]="store.tab() === t.id" (click)="openTab(t.id)">{{ t.label }}</button>
+              <button role="tab" [id]="'tab-' + t.id" aria-controls="tab-panel" [attr.aria-selected]="store.tab() === t.id"
+                [attr.tabindex]="store.tab() === t.id ? 0 : -1" [class.on]="store.tab() === t.id" (click)="openTab(t.id)">{{ t.label }}</button>
             }
-          </nav>
+          </div>
 
-          <div class="content">
+          <div class="content" id="tab-panel" role="tabpanel" [attr.aria-labelledby]="'tab-' + store.tab()" tabindex="0">
             @switch (store.tab()) {
               @case ('overview') { <ml-overview /> }
               @case ('spectrum') { <ml-spectrum /> }
@@ -91,23 +104,38 @@ import { Store, Tab } from './store';
             }
           </div>
         } @else {
+          <div class="floating"><ng-container *ngTemplateOutlet="navToggle" /></div>
           <div class="empty">
             @if (store.analyzing().length) {
               <h1>Analyzing {{ store.analyzing()[0] }}</h1>
               <p class="muted">Loudness, peaks, stereo, spectrum and edges, usually in a second or two.</p>
             } @else {
               <h1>Drop a mix or master here</h1>
-              <p class="muted">WAV, FLAC, AIFF, MP3 or M4A. Each file becomes a version you can compare with the others.</p>
+              <p class="muted">WAV, FLAC, AIFF, MP3 or M4A. Analysis takes about a second and runs on this computer.</p>
               <button class="primary" (click)="store.pickFiles()">Choose files</button>
+              <ul class="gets" aria-label="What MixLens checks">
+                <li>What to fix first, before release or mastering</li>
+                <li>Loudness and peaks against your streaming target</li>
+                <li>Stereo, tone and file-edge checks</li>
+                <li>What changed between two bounces, second by second</li>
+              </ul>
+              <p class="naming">Files with "master" in the name are checked as masters, and "ref" as reference tracks. You can change this after.</p>
             }
           </div>
         }
       </main>
 
       @if (store.chatOpen()) {
-        <aside class="chat"><ml-assistant /></aside>
+        <!-- Loaded on first open: keeps the assistant and its markdown parser out of the startup bundle. -->
+        <aside class="chat" aria-label="Assistant">@defer (on immediate) { <ml-assistant /> }</aside>
       }
+      <!-- Shown only when a panel overlays the main column (narrow windows or high zoom). -->
+      <div class="scrim" aria-hidden="true" (click)="closeOverlays()"></div>
     </div>
+
+    <ng-template #navToggle>
+      <button class="nav-toggle" (click)="openNav()" [attr.aria-expanded]="store.navOpen()" aria-controls="side-panel">Songs</button>
+    </ng-template>
 
     @if (store.dragOver()) {
       <div class="drop" aria-hidden="true"><p>Drop to add {{ store.project() ? 'versions to ' + store.project()!.name : 'a new song' }}</p></div>
@@ -118,48 +146,72 @@ import { Store, Tab } from './store';
         <button class="ghost" (click)="store.error.set(null)">Dismiss</button>
       </div>
     }
-    @if (store.showSettings()) { <ml-settings /> }
+    @if (store.showSettings()) { @defer (on immediate) { <ml-settings /> } }
   `,
   styles: `
-    .shell { display: grid; grid-template-columns: 236px minmax(0, 1fr) 380px; height: 100vh; }
+    .shell { display: grid; grid-template-columns: 236px minmax(0, 1fr) 380px; height: 100vh; position: relative; }
     .shell.chat-closed { grid-template-columns: 236px minmax(0, 1fr); }
-    .side { border-right: 1px solid var(--line); background: #1e252b; min-height: 0; }
-    .chat { border-left: 1px solid var(--line); background: #1e252b; min-height: 0; }
-    main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-    .vhead { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 18px 28px 12px; }
-    .songbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-    .song { color: var(--muted); font-size: 13px; }
-    .ctx { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--faint); }
-    .ctx select { font-size: 12px; padding: 1px 4px; }
-    .ctx-scope { font-size: 11px; color: var(--b); border: 1px solid var(--b); border-radius: 3px; padding: 0 5px; }
-    .ctx-song { font-size: 12px; color: var(--faint); }
-    .title h1 { font-size: 26px; cursor: text; }
-    .title input { font-size: 22px; font-family: var(--font-display); width: 360px; }
-    .file { color: var(--faint); font-size: 12px; margin-top: 2px; }
-    .actions { display: flex; gap: 8px; align-items: center; }
-    .seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-s); overflow: hidden; }
-    .seg button { border: none; border-radius: 0; background: transparent; padding: 5px 12px; }
-    .seg button + button { border-left: 1px solid var(--line); }
-    .seg button.on { background: var(--raised); color: var(--a); font-weight: 600; }
-    .danger { border-color: var(--err); color: var(--err); background: transparent; }
-    .tabs { display: flex; gap: 2px; padding: 0 22px; border-bottom: 1px solid var(--line); }
+    .side { border-right: 1px solid var(--line); background: var(--surface-side); min-height: 0; }
+    .chat { border-left: 1px solid var(--line); background: var(--surface-side); min-height: 0; }
+    main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+    .lead { display: flex; align-items: center; gap: var(--space-xs); min-width: 0; }
+    .nav-toggle { display: none; }
+    .floating { position: absolute; top: var(--space-s); left: var(--space-s); }
+    .scrim { display: none; position: fixed; inset: 0; z-index: var(--z-scrim); background: var(--scrim); }
+    .vhead { display: flex; flex-direction: column; padding: var(--space-m) var(--page-x) var(--space-s); max-width: calc(1600px + 2 * var(--page-x)); }
+    .top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-m); }
+    .song { color: var(--muted); font-size: var(--text-caption); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .actions { display: flex; gap: var(--space-xs); align-items: center; flex: none; }
+    .toggle { white-space: nowrap; }
+    .toggle.on { color: var(--ink); border-color: var(--line); }
+    .name { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: var(--space-s); row-gap: var(--space-2xs); margin-top: var(--space-2xs); }
+    .name h1 { font-size: var(--text-heading); cursor: text; min-width: 0; overflow-wrap: anywhere; }
+    .rename { font-size: var(--text-caption); padding: 2px 8px; }
+    .name input { font-size: var(--text-heading); font-family: var(--font-display); width: min(360px, 100%); }
+    .file { color: var(--faint); font-size: var(--text-caption); }
+    .context { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-xs) var(--space-l); margin-top: var(--space-s); }
+    .ctx { display: inline-flex; align-items: center; gap: var(--space-xs); font-size: var(--text-body); color: var(--muted); }
+    .ctx select { padding: 3px 6px; }
+    .ctx-scope { font-size: var(--text-caption); color: var(--b); border: 1px solid var(--b); border-radius: 3px; padding: 0 5px; }
+    .hint { font-size: var(--text-caption); color: var(--faint); }
+    .tabs { display: flex; gap: 2px; padding: 0 calc(var(--page-x) - 10px); border-bottom: 1px solid var(--line); }
     .tabs button { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 10px; color: var(--muted); }
-    .tabs button.on { color: var(--ink); border-bottom-color: var(--a); }
+    .tabs button.on { color: var(--ink); border-bottom-color: var(--ink); }
     .tabs button:hover { color: var(--ink); }
-    .content { flex: 1; overflow-y: auto; padding: 18px 28px 40px; }
-    .empty { margin: auto; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; max-width: 440px; padding: 24px; }
-    .empty h1 { font-size: 26px; }
-    .drop { position: fixed; inset: 10px; border: 2px dashed var(--a); border-radius: 12px; background: rgba(27, 33, 39, 0.82);
-      display: grid; place-items: center; z-index: 30; pointer-events: none; font-size: 20px; font-family: var(--font-display); }
-    .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 12px;
+    .content { flex: 1; overflow-y: auto; padding: var(--space-l) var(--page-x) var(--space-2xl); container-type: inline-size; }
+    .content:focus-visible { outline-offset: -2px; }
+    /* Very wide monitors: keep line lengths and charts at a readable size. */
+    .content > * { max-width: 1600px; }
+    .empty { margin: auto; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; max-width: 440px; padding: var(--space-l); }
+    .gets { list-style: none; margin: var(--space-m) 0 0; padding: var(--space-m) 0 0; border-top: 1px solid var(--line-soft);
+      display: grid; gap: var(--space-2xs); color: var(--muted); }
+    .naming { font-size: var(--text-caption); color: var(--faint); margin-top: var(--space-xs); }
+    .drop { position: fixed; inset: 10px; border: 2px dashed var(--a); border-radius: 12px; background: color-mix(in srgb, var(--bg) 82%, transparent);
+      display: grid; place-items: center; z-index: var(--z-drop); pointer-events: none; font-size: var(--text-title); font-family: var(--font-display); }
+    .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: var(--z-toast); display: flex; align-items: center; gap: var(--space-s);
       background: var(--raised); border: 1px solid var(--err); border-radius: var(--radius-m); padding: 10px 12px 10px 16px; max-width: min(720px, 90vw); }
-    @media (max-width: 1200px) { .shell { grid-template-columns: 220px minmax(0, 1fr) 320px; } }
+    /* Breakpoints are in CSS pixels, so they also apply when the window is zoomed in. */
+    @media (max-width: 1199px) { .shell { grid-template-columns: 220px minmax(0, 1fr) 320px; } }
+    /* Below 1000 px the assistant slides over the main column instead of squeezing it. */
+    @media (max-width: 999px) {
+      .shell, .shell.chat-closed { grid-template-columns: 220px minmax(0, 1fr); }
+      .chat { position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, calc(100vw - 48px)); z-index: var(--z-drawer); }
+      .shell:not(.chat-closed) .scrim { display: block; }
+    }
+    /* Below 720 px the song list becomes a drawer too, opened from the Songs button. */
+    @media (max-width: 719px) {
+      .shell, .shell.chat-closed { grid-template-columns: minmax(0, 1fr); }
+      .side { position: fixed; top: 0; left: 0; bottom: 0; width: min(260px, calc(100vw - 48px)); z-index: var(--z-drawer);
+        transform: translateX(-100%); visibility: hidden; transition: transform 200ms cubic-bezier(0.25, 1, 0.5, 1), visibility 200ms; }
+      .shell.nav-open .side { transform: none; visibility: visible; }
+      .shell.nav-open .scrim { display: block; }
+      .nav-toggle { display: inline-flex; }
+    }
   `,
 })
 export class App implements OnInit {
   readonly store = inject(Store);
   readonly editing = signal(false);
-  readonly confirmDelete = signal(false);
   readonly time = time;
   readonly tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
@@ -197,8 +249,44 @@ export class App implements OnInit {
     return v ? format(v.sample_format, v.sample_rate) : '';
   });
 
+  /** File details under the title; the file name only when the label isn't already it. */
+  readonly fileLine = computed(() => {
+    const v = this.store.version();
+    if (!v) return '';
+    const sameName = v.label === v.file_name.replace(/\.[^.]+$/, '');
+    return [sameName ? null : v.file_name, this.fmtFormat(), time(v.duration_s)].filter(Boolean).join(', ');
+  });
+
   ngOnInit() {
     void this.store.init();
+  }
+
+  openNav() {
+    this.store.navOpen.set(true);
+    // Move focus into the drawer once it's visible.
+    setTimeout(() => document.querySelector<HTMLElement>('#side-panel button')?.focus());
+  }
+
+  /** Close whatever is overlaying the main column: the song drawer, or the assistant when it's a drawer. */
+  closeOverlays() {
+    if (this.store.navOpen()) {
+      this.store.navOpen.set(false);
+      document.querySelector<HTMLElement>('.nav-toggle')?.focus();
+    } else if (this.store.chatOpen() && !matchMedia(WIDE).matches) {
+      this.store.chatOpen.set(false);
+    }
+  }
+
+  /** Arrow keys, Home and End move between tabs (one Tab stop for the whole row). */
+  tabKey(ev: KeyboardEvent) {
+    const n = this.tabs.length;
+    const i = this.tabs.findIndex((t) => t.id === this.store.tab());
+    const moves: Record<string, number> = { ArrowRight: i + 1, ArrowLeft: i - 1 + n, Home: 0, End: n - 1 };
+    if (!(ev.key in moves)) return;
+    ev.preventDefault();
+    const t = this.tabs[moves[ev.key] % n];
+    this.openTab(t.id);
+    document.getElementById('tab-' + t.id)?.focus();
   }
 
   openTab(t: Tab) {
@@ -207,6 +295,7 @@ export class App implements OnInit {
   }
 
   setKind(kind: Kind) {
+    this.store.dismissKindTip();
     const v = this.store.version();
     if (v && v.kind !== kind) void this.store.updateVersion(v.label, kind);
   }

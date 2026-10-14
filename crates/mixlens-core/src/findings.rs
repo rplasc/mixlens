@@ -25,9 +25,20 @@ impl Thresholds {
     }
 }
 
+/// "20–40 Hz", "500 Hz–1 kHz", "16–20 kHz".
 fn band_label(lo: f64, hi: f64) -> String {
-    let k = |x: f64| if x >= 1000.0 { format!("{}k", (x / 100.0).round() / 10.0) } else { format!("{x:.0}") };
-    format!("{}–{} Hz", k(lo), k(hi))
+    let k = |x: f64| ((x / 100.0).round() / 10.0).to_string();
+    match (lo >= 1000.0, hi >= 1000.0) {
+        (true, _) => format!("{}–{} kHz", k(lo), k(hi)),
+        (false, true) => format!("{lo:.0} Hz–{} kHz", k(hi)),
+        _ => format!("{lo:.0}–{hi:.0} Hz"),
+    }
+}
+
+/// Seconds as a DAW-style position, "1:03.2".
+fn clock(s: f64) -> String {
+    let m = (s / 60.0).floor();
+    format!("{}:{:04.1}", m, s - m * 60.0)
 }
 
 pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
@@ -70,7 +81,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                     format!("True peak is {:.1} dBTP. Leave roughly 3–6 dB so the master has room to work.", l.true_peak_dbtp),
                 ));
             } else {
-                out.push(f(Severity::Ok, "mix_headroom", "Headroom", format!("True peak {:.1} dBTP.", l.true_peak_dbtp)));
+                out.push(f(Severity::Ok, "mix_headroom", "Room for mastering", format!("True peak {:.1} dBTP leaves the master room to work.", l.true_peak_dbtp)));
             }
             if l.plr_db < th.mix_plr_min {
                 out.push(f(
@@ -100,7 +111,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                     ),
                 ));
             } else {
-                out.push(f(Severity::Ok, "tp_ceiling", "True peak", format!("{:.1} dBTP, within the {:.0} dBTP ceiling.", l.true_peak_dbtp, ceiling)));
+                out.push(f(Severity::Ok, "tp_ceiling", "True peak under the ceiling", format!("{:.1} dBTP against a {:.0} dBTP ceiling.", l.true_peak_dbtp, ceiling)));
             }
             let diff = l.integrated_lufs - t.target_lufs;
             let headroom_to_boost = t.ceiling_dbtp - l.true_peak_dbtp;
@@ -203,8 +214,9 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             "internal_silence",
             "Digital silence inside the song",
             format!(
-                "{:.1}–{:.1} s is silent. If that isn't intentional, tracks may have been muted or soloed during export.",
-                gap.start_s, gap.end_s
+                "{} to {} is silent. If that isn't intentional, tracks may have been muted or soloed during export.",
+                clock(gap.start_s),
+                clock(gap.end_s)
             ),
         ));
     }
@@ -223,7 +235,16 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         out.push(f(Severity::Warn, "dc_offset", "DC offset", format!("{:.4} (≈{:.0} dBFS). A high-pass at ~10 Hz removes it.", dc, 20.0 * dc.log10())));
     }
     if l.lr_balance_db.abs() > 1.5 {
-        out.push(f(Severity::Warn, "lr_balance", "Left/right imbalance", format!("{:+.1} dB (L vs R).", l.lr_balance_db)));
+        out.push(f(
+            Severity::Warn,
+            "lr_balance",
+            "Left/right imbalance",
+            format!(
+                "The {} channel is {:.1} dB louder. Check panning and any effect or send that only feeds one side.",
+                if l.lr_balance_db > 0.0 { "left" } else { "right" },
+                l.lr_balance_db.abs()
+            ),
+        ));
     }
 
     // ---- stereo ----
@@ -242,17 +263,23 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             "phase",
             "Out-of-phase moments",
             format!(
-                "{} loud window(s) with negative correlation, first at {:.1} s ({:.2}).",
+                "{} loud {} where left and right partly cancel (correlation below 0), first at {} ({:.2}). Check for a polarity-flipped mic or a stereo widener.",
                 loud_neg.len(),
-                loud_neg[0].t,
+                if loud_neg.len() == 1 { "moment" } else { "moments" },
+                clock(loud_neg[0].t),
                 loud_neg[0].corr
             ),
         ));
     }
     if s.mono_loss_lu < -1.5 {
-        out.push(f(Severity::Warn, "mono", "Loses level in mono", format!("{:.1} LU quieter when folded to mono.", s.mono_loss_lu)));
+        out.push(f(
+            Severity::Warn,
+            "mono",
+            "Loses level in mono",
+            format!("{:.1} LU quieter when folded to mono, so phone speakers and mono club systems lose part of the mix.", -s.mono_loss_lu),
+        ));
     } else {
-        out.push(f(Severity::Ok, "mono", "Mono compatibility", format!("{:+.2} LU when folded to mono.", s.mono_loss_lu)));
+        out.push(f(Severity::Ok, "mono", "Holds up in mono", format!("Level changes {:+.2} LU when folded to mono.", s.mono_loss_lu)));
     }
 
     // ---- tone ----
@@ -282,14 +309,14 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                     Severity::Warn,
                     "low_mid_buildup",
                     "Low-mid build-up",
-                    format!("{:.0} Hz sits {:+.1} dB above the overall tilt; can read as boxy or muddy.", b.fc, b.dev_db),
+                    format!("{:.0} Hz sits {:.1} dB above the overall tilt, which can sound boxy or muddy.", b.fc, b.dev_db),
                 ),
             });
         }
     }
     if let Some(b) = dev(2000.0, 5000.0).into_iter().min_by(|a, b| a.dev_db.partial_cmp(&b.dev_db).unwrap()) {
         if b.dev_db < -3.5 {
-            out.push(f(Severity::Info, "presence_dip", "Presence dip", format!("{:.0} Hz is {:.1} dB below the tilt.", b.fc, b.dev_db)));
+            out.push(f(Severity::Info, "presence_dip", "Presence dip", format!("{:.0} Hz sits {:.1} dB below the overall tilt, which can push vocals and leads back.", b.fc, -b.dev_db)));
         }
     }
     if let Some(b) = sp.third_octave.iter().find(|b| (b.fc - 12700.0).abs() < 400.0) {
@@ -298,7 +325,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                 Severity::Info,
                 "dark_top",
                 "Dark top end",
-                format!("12.7 kHz is {:.1} dB below the tilt. Fine for warm genres; a gentle shelf adds air.", b.dev_db),
+                format!("12.7 kHz sits {:.1} dB below the overall tilt. Fine for warm genres; a gentle high shelf adds air.", -b.dev_db),
             ));
         }
     }
@@ -307,11 +334,19 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             Severity::Warn,
             "sibilance",
             "Strong 5–10 kHz peaks",
-            format!("In the loudest 1% of moments 5–10 kHz is within {:.1} dB of the full band. Check S's and hats.", -sp.sibilance.p99_db),
+            format!("In the loudest 1% of moments, 5–10 kHz comes within {:.1} dB of the full band. Check S's and hi-hats.", -sp.sibilance.p99_db),
         ));
     }
     if sp.sub30_share_db > -20.0 {
-        out.push(f(Severity::Warn, "subsonic", "Heavy sub-30 Hz energy", format!("{:.1} dB of total energy below 30 Hz eats limiter headroom.", sp.sub30_share_db)));
+        out.push(f(
+            Severity::Warn,
+            "subsonic",
+            "Heavy sub-30 Hz energy",
+            format!(
+                "Energy below 30 Hz is only {:.1} dB under the total. Most speakers can't play it, but it still uses limiter headroom; a high-pass around 25–30 Hz frees it.",
+                -sp.sub30_share_db
+            ),
+        ));
     }
 
     // ---- genre ----
@@ -320,14 +355,22 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         let mut off: Vec<_> = m.bands.iter().filter(|b| !b.within()).collect();
         off.sort_by(|a, b| excess(b).partial_cmp(&excess(a)).unwrap());
         if off.is_empty() {
-            out.push(f(Severity::Ok, "genre_tone", "Tonal balance", format!("Every octave is within tolerance of a typical {} balance.", g.name)));
+            out.push(f(Severity::Ok, "genre_tone", format!("Tonal balance fits {}", g.name), format!("Every octave is within tolerance of a typical {} balance.", g.name)));
         } else {
-            let list: Vec<String> = off.iter().take(3).map(|b| format!("{} {:+.1} dB", band_label(b.lo, b.hi), b.delta_db)).collect();
+            let list: Vec<String> = off
+                .iter()
+                .take(3)
+                .map(|b| format!("{} {:.1} dB {}", band_label(b.lo, b.hi), b.delta_db.abs(), if b.delta_db < 0.0 { "lower" } else { "higher" }))
+                .collect();
             out.push(f(
                 Severity::Warn,
                 "genre_tone",
                 format!("Tonal balance differs from typical {}", g.name),
-                format!("{} versus the genre target. Check against a reference track before reaching for EQ.", list.join(", ")),
+                format!(
+                    "Against a typical {} balance: {}. Genre targets are broad averages, so compare with a reference track before reaching for EQ.",
+                    g.name,
+                    list.join(", ")
+                ),
             ));
         }
         let tilt = sp.tilt_db_per_oct;
@@ -335,32 +378,59 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             out.push(f(
                 Severity::Info,
                 "genre_tilt",
-                if tilt < g.tilt_range.0 { "Darker than typical for the genre" } else { "Brighter than typical for the genre" },
-                format!("Tilt is {:.1} dB/oct; {} usually sits between {:.1} and {:.1}.", tilt, g.name, g.tilt_range.0, g.tilt_range.1),
+                if tilt < g.tilt_range.0 { format!("Darker than typical {}", g.name) } else { format!("Brighter than typical {}", g.name) },
+                format!("Tilt is {:.1} dB per octave; {} usually sits between {:.1} and {:.1}.", tilt, g.name, g.tilt_range.0, g.tilt_range.1),
             ));
         }
         if t.kind == Kind::Master {
             let (lo, hi) = g.master_lufs_range;
             if l.integrated_lufs < lo || l.integrated_lufs > hi {
+                let quieter = l.integrated_lufs < lo;
+                let range = format!("{:.1} LUFS; {} masters usually land between {:.0} and {:.0} LUFS.", l.integrated_lufs, g.name, lo, hi);
+                let platform = t.platform.as_ref().map_or("Streaming platforms", |p| p.name.as_str());
+                // Below the streaming target, the loudness finding already explains playback.
+                let detail = if quieter && l.integrated_lufs < t.target_lufs - 1.0 {
+                    range
+                } else if quieter {
+                    format!(
+                        "{range} {platform} turns those down to about {:.0} LUFS, so this won't sound quieter there. Push louder only if you want the denser sound of a heavily limited master.",
+                        t.target_lufs
+                    )
+                } else {
+                    format!(
+                        "{range} {platform} turns it down to about {:.0} LUFS, so the extra limiting costs dynamics without making it louder there.",
+                        t.target_lufs
+                    )
+                };
                 out.push(f(
                     Severity::Info,
                     "genre_loudness",
-                    if l.integrated_lufs < lo { "Quieter than typical genre masters" } else { "Louder than typical genre masters" },
-                    format!(
-                        "{:.1} LUFS; {} masters usually land between {:.0} and {:.0} LUFS. Streaming platforms still normalize to about {:.0} LUFS either way.",
-                        l.integrated_lufs, g.name, lo, hi, t.target_lufs
-                    ),
+                    format!("{} than most {} masters", if quieter { "Quieter" } else { "Louder" }, g.name),
+                    detail,
                 ));
             }
-            let mut notes = vec![];
+            // Each note, and whether the value is above the genre's range.
+            let mut notes: Vec<(String, bool)> = vec![];
             if l.plr_db < g.master_plr_range.0 || l.plr_db > g.master_plr_range.1 {
-                notes.push(format!("PLR {:.1} dB (typical {:.0}–{:.0})", l.plr_db, g.master_plr_range.0, g.master_plr_range.1));
+                notes.push((
+                    format!("Peak-to-loudness ratio is {:.1} dB ({} usually {:.0}–{:.0})", l.plr_db, g.name, g.master_plr_range.0, g.master_plr_range.1),
+                    l.plr_db > g.master_plr_range.1,
+                ));
             }
             if l.lra_lu < g.lra_range.0 || l.lra_lu > g.lra_range.1 {
-                notes.push(format!("loudness range {:.1} LU (typical {:.0}–{:.0})", l.lra_lu, g.lra_range.0, g.lra_range.1));
+                let lead = if notes.is_empty() { "Loudness range" } else { "loudness range" };
+                notes.push((format!("{lead} is {:.1} LU (usually {:.0}–{:.0})", l.lra_lu, g.lra_range.0, g.lra_range.1), l.lra_lu > g.lra_range.1));
             }
             if !notes.is_empty() {
-                out.push(f(Severity::Info, "genre_dynamics", "Dynamics outside the genre's usual range", format!("{} for {}.", notes.join(", "), g.name)));
+                let text: Vec<&str> = notes.iter().map(|(n, _)| n.as_str()).collect();
+                let (title, why) = if notes.iter().all(|(_, above)| *above) {
+                    (format!("More dynamic than most {} masters", g.name), " Fine if intended; next to typical tracks in the genre it will sound less dense.")
+                } else if notes.iter().all(|(_, above)| !*above) {
+                    (format!("Less dynamic than most {} masters", g.name), " Heavy limiting flattens transients, and platforms turn loud masters down anyway.")
+                } else {
+                    (format!("Dynamics differ from typical {}", g.name), "")
+                };
+                out.push(f(Severity::Info, "genre_dynamics", title, format!("{}.{why}", text.join(", and "))));
             }
         }
     }
