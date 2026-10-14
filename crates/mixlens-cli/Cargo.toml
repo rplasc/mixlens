@@ -1,0 +1,13 @@
+[package]
+name = "mixlens-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mixlens"
+path = "src/main.rs"
+
+[dependencies]
+mixlens-core = { path = "../mixlens-core" }
+serde_json = "1"

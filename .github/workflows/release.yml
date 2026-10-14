@@ -1,0 +1,38 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish a GitHub Release with the Windows installers.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+      - name: Install JS dependencies
+        run: |
+          npm ci
+          npm ci --prefix ui
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: MixLens ${{ github.ref_name }}
+          releaseBody: |
+            Download **MixLens_*_x64-setup.exe** below and run it. Windows SmartScreen may warn because the installer isn't code-signed yet: choose **More info → Run anyway**.
+          releaseDraft: false
+          prerelease: false

@@ -1,0 +1,17 @@
+[package]
+name = "mixlens-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Mixing and mastering analysis engine for MixLens"
+
+[dependencies]
+symphonia = { version = "0.5", default-features = false, features = ["wav", "flac", "aiff", "pcm", "mp3", "isomp4", "aac", "alac"] }
+ebur128 = "0.1.10"
+realfft = "3.4"
+rubato = "0.16"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1.5"
+thiserror = "2"

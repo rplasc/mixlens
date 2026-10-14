@@ -1,0 +1,8 @@
+/target
+node_modules/
+/ui/dist/
+/ui/.angular/
+/ui/public/mock/
+/src-tauri/gen/
+*.log
+.DS_Store

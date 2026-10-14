@@ -1,0 +1,128 @@
+// Typed bridge to the Rust backend. Field names mirror the Rust structs (snake_case);
+// command argument names are camelCase (Tauri converts them).
+
+import { invoke } from '@tauri-apps/api/core';
+
+export type Kind = 'mix' | 'master';
+export type Severity = 'ok' | 'info' | 'warn' | 'error';
+export type Provider = 'anthropic' | 'openai' | 'ollama';
+
+export interface Project { id: number; name: string; version_count: number; created_at: string }
+
+export interface VersionSummary {
+  id: number; project_id: number; label: string; file_name: string; path: string; kind: Kind;
+  created_at: string; integrated_lufs: number; true_peak_dbtp: number; lra_lu: number;
+  duration_s: number; sample_rate: number; sample_format: string; worst: Severity;
+  errors: number; warnings: number;
+}
+
+export interface Finding { severity: Severity; code: string; title: string; detail: string }
+export interface BandDev { fc: number; level_db: number; dev_db: number }
+export interface Section { start_s: number; end_s: number; kind: 'silence' | 'quiet' | 'loud'; lufs: number }
+
+export interface Report {
+  schema: number;
+  file: {
+    path: string; file_name: string; sample_rate: number; channels: number;
+    bits_per_sample: number | null; sample_format: string; duration_s: number; size_bytes: number; hash: string;
+  };
+  loudness: {
+    integrated_lufs: number; lra_lu: number; true_peak_dbtp: number; sample_peak_dbfs: number;
+    sample_peak_l_dbfs: number; sample_peak_r_dbfs: number; rms_dbfs: number; crest_db: number; plr_db: number;
+    max_short_term_lufs: number; max_momentary_lufs: number; samples_near_full_scale: number;
+    samples_over_full_scale: number; flat_top_runs: number; dc_offset: [number, number]; lr_balance_db: number;
+    short_term: number[]; short_term_hop_s: number;
+  };
+  stereo: {
+    correlation: number; side_mid_db: number; low_correlation: number; low_side_mid_db: number;
+    mono_fold_lufs: number; mono_loss_lu: number; window_corr_min: number; window_corr_p5: number;
+    window_corr_median: number; negative_window_fraction: number;
+    low_corr_windows: { t: number; corr: number; level_dbfs: number }[];
+  };
+  spectrum: {
+    tilt_db_per_oct: number; third_octave: BandDev[];
+    octave_share: { lo: number; hi: number; share_db: number }[];
+    lf_peaks: { hz: number; above_median_db: number; note: string }[];
+    sub30_share_db: number;
+    sibilance: { median_db: number; p99_db: number; max_db: number };
+  };
+  edges: {
+    first_sound_s: number; last_sound_s: number; leading_silence_s: number; trailing_silence_s: number;
+    tail_last50ms_dbfs: number; ends_on_silence: boolean; tail_truncated: boolean; fade_out_detected: boolean;
+    internal_silences: { start_s: number; end_s: number }[];
+  };
+  sections: Section[];
+  dither: null | { bits: number; samples_checked: number; distinct_codes: number; nonzero_fraction: number; level_dbfs: number; detected: boolean; note: string };
+  findings: Finding[];
+  analysis_ms: number;
+}
+
+export interface ReportEnvelope { id: number; label: string; kind: Kind; path: string; report: Report }
+
+export interface Comparison {
+  a_file: string; b_file: string; resampled: boolean; lag_ms: number; gain_db: number;
+  residual_rel_db: number; residual_dbfs: number; window_s: number; windows: number[];
+  changed_regions: { start_s: number; end_s: number; mean_diff_rel_db: number; lufs_a: number; lufs_b: number; octave_delta_db: number[] }[];
+  section_deltas: { start_s: number; end_s: number; kind: Section['kind']; lufs_a: number; lufs_b: number; delta_lu: number }[];
+  metric_deltas: { name: string; a: number; b: number; delta: number; unit: string }[];
+  third_octave_delta: { fc: number; dev_a: number; dev_b: number }[];
+  octave_bands: string[];
+}
+
+export interface SectionAnalysis {
+  loudness: { start_s: number; end_s: number; lufs: number; vs_integrated_lu: number };
+  bands: { start_s: number; end_s: number; octave_level_db: number[]; tilt_db_per_oct: number; third_octave: BandDev[] };
+  octave_bands: string[];
+}
+
+export interface CodecResult { codec: string; label: string; true_peak_dbtp: number | null; integrated_lufs: number | null; error: string | null }
+
+export interface Settings {
+  provider: Provider; anthropic_model: string; openai_model: string; ollama_model: string;
+  ollama_url: string; ffmpeg_path: string; target_lufs: number; max_tool_rounds: number;
+}
+export interface SettingsView extends Settings {
+  has_anthropic_key: boolean; has_openai_key: boolean; ffmpeg_found: boolean; keyring_ok: boolean;
+}
+
+export interface ChatMessage { id: number; role: 'user' | 'assistant'; content: string; created_at: string }
+
+export const inTauri = (): boolean => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+type Mock = (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
+let mock: Mock | null = null;
+
+async function call<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+  if (inTauri()) return invoke<T>(cmd, args);
+  // Browser preview (ng serve): use local sample data so the UI can be developed without the shell.
+  mock ??= (await import('./mock')).mockInvoke;
+  return mock(cmd, args) as Promise<T>;
+}
+
+export const api = {
+  listProjects: () => call<Project[]>('list_projects'),
+  createProject: (name: string) => call<Project>('create_project', { name }),
+  renameProject: (id: number, name: string) => call<void>('rename_project', { id, name }),
+  deleteProject: (id: number) => call<void>('delete_project', { id }),
+  listVersions: (projectId: number) => call<VersionSummary[]>('list_versions', { projectId }),
+  addVersion: (projectId: number, path: string, kind?: Kind) => call<VersionSummary>('add_version', { projectId, path, kind: kind ?? null, label: null }),
+  updateVersion: (id: number, label: string, kind: Kind) => call<VersionSummary>('update_version', { id, label, kind }),
+  deleteVersion: (id: number) => call<void>('delete_version', { id }),
+  getReport: (id: number) => call<ReportEnvelope>('get_report', { id }),
+  compare: (a: number, b: number) => call<Comparison>('compare_versions', { a, b }),
+  section: (id: number, startS: number, endS: number) => call<SectionAnalysis>('section_analysis', { id, startS, endS }),
+  codecCheck: (id: number) => call<CodecResult[]>('codec_check', { id }),
+  getSettings: () => call<SettingsView>('get_settings'),
+  saveSettings: (settings: Settings) => call<SettingsView>('save_settings', { settings }),
+  setApiKey: (provider: Provider, key: string) => call<SettingsView>('set_api_key', { provider, key }),
+  listModels: (provider: Provider) => call<string[]>('list_models', { provider }),
+  getChat: (projectId: number) => call<ChatMessage[]>('get_chat', { projectId }),
+  clearChat: (projectId: number) => call<void>('clear_chat', { projectId }),
+  chat: (projectId: number, message: string, focus: number[]) => call<ChatMessage>('ai_chat', { projectId, message, focus }),
+};
+
+export function errorText(e: unknown): string {
+  if (typeof e === 'string') return e;
+  if (e instanceof Error) return e.message;
+  return JSON.stringify(e);
+}

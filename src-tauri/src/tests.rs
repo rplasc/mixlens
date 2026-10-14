@@ -1,0 +1,191 @@
+//! End-to-end test of the AI tool loop against a mock HTTP server for each provider.
+//! Uses real analysis on generated WAV files, so tool results are genuine.
+
+use crate::ai::{converse, Msg};
+use crate::db;
+use crate::settings::{Provider, Settings};
+use crate::state::{AudioCache, Inner, Shared};
+use mixlens_core::{analyze_file, Kind, Targets};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+fn write_wav(path: &Path, freq: f32, amp: f32, secs: f32) {
+    let sr = 48000u32;
+    let n = (sr as f32 * secs) as usize;
+    let mut data = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        let t = i as f32 / sr as f32;
+        let env = (t / secs * std::f32::consts::PI).sin();
+        let v = (amp * env * (2.0 * std::f32::consts::PI * freq * t).sin() * 32767.0) as i16;
+        data.extend_from_slice(&v.to_le_bytes());
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut f = std::fs::File::create(path).unwrap();
+    let len = data.len() as u32;
+    f.write_all(b"RIFF").unwrap();
+    f.write_all(&(36 + len).to_le_bytes()).unwrap();
+    f.write_all(b"WAVEfmt ").unwrap();
+    f.write_all(&16u32.to_le_bytes()).unwrap();
+    f.write_all(&1u16.to_le_bytes()).unwrap();
+    f.write_all(&2u16.to_le_bytes()).unwrap();
+    f.write_all(&sr.to_le_bytes()).unwrap();
+    f.write_all(&(sr * 4).to_le_bytes()).unwrap();
+    f.write_all(&4u16.to_le_bytes()).unwrap();
+    f.write_all(&16u16.to_le_bytes()).unwrap();
+    f.write_all(b"data").unwrap();
+    f.write_all(&len.to_le_bytes()).unwrap();
+    f.write_all(&data).unwrap();
+}
+
+/// Serves the canned responses in order, one per connection, and records request bodies.
+fn mock_server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(vec![]));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for body in responses {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).unwrap();
+            seen2.lock().unwrap().push(String::from_utf8_lossy(&buf).to_string());
+            let mut s = stream;
+            write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }
+    });
+    (addr, seen)
+}
+
+fn setup() -> (Shared, tempdir::TempDir) {
+    let dir = tempdir::TempDir::new();
+    let a = dir.0.join("song_mix_v1.wav");
+    let b = dir.0.join("song_mix_v2.wav");
+    write_wav(&a, 220.0, 0.3, 6.0);
+    write_wav(&b, 220.0, 0.45, 6.0);
+    let conn = db::open(&dir.0.join("t.db")).unwrap();
+    let inner = Arc::new(Inner { db: Mutex::new(conn), cache: Mutex::new(AudioCache::new(2)), http: reqwest::Client::new() });
+    {
+        let c = inner.db.lock().unwrap();
+        let p = db::create_project(&c, "Test").unwrap();
+        for (path, label) in [(&a, "v1"), (&b, "v2")] {
+            let (_, r) = analyze_file(path, &Targets::default()).unwrap();
+            db::insert_version(&c, p.id, label, path.to_str().unwrap(), Kind::Mix, &r).unwrap();
+        }
+    }
+    (inner, dir)
+}
+
+mod tempdir {
+    pub struct TempDir(pub std::path::PathBuf);
+    impl TempDir {
+        pub fn new() -> Self {
+            let p = std::env::temp_dir().join(format!("mixlens-test-{}-{}", std::process::id(), rand()));
+            std::fs::create_dir_all(&p).unwrap();
+            TempDir(p)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn rand() -> u128 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    }
+}
+
+fn run(inner: Shared, provider: Provider, st: &Settings) -> String {
+    let msgs = vec![Msg::User("What changed between v1 and v2?".into())];
+    tauri::async_runtime::block_on(converse(inner, st, provider, "test-model", Some("test-key"), msgs, |_| {})).unwrap()
+}
+
+#[test]
+fn agent_loop_all_providers() {
+    let (inner, _dir) = setup();
+
+    // Anthropic: tool_use then text.
+    let (url, seen) = mock_server(vec![
+        r#"{"content":[{"type":"text","text":"Comparing."},{"type":"tool_use","id":"toolu_1","name":"compare_versions","input":{"version_a":1,"version_b":2}}],"stop_reason":"tool_use"}"#.into(),
+        r#"{"content":[{"type":"text","text":"done-anthropic"}],"stop_reason":"end_turn"}"#.into(),
+    ]);
+    std::env::set_var("MIXLENS_ANTHROPIC_BASE_URL", &url);
+    let out = run(inner.clone(), Provider::Anthropic, &Settings::default());
+    assert_eq!(out, "done-anthropic");
+    let reqs = seen.lock().unwrap().clone();
+    assert!(reqs[0].contains("cache_control") && reqs[0].contains("compare_versions"), "first request should carry cached system + tools");
+    assert!(reqs[1].contains("tool_result") && reqs[1].contains("toolu_1"), "tool result must reference the call id");
+    assert!(reqs[1].contains("residual_rel_db") && reqs[1].contains("section_deltas"), "real comparison data goes back to the model");
+
+    // OpenAI: function call with string arguments, then text.
+    let (url, seen) = mock_server(vec![
+        r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_9","type":"function","function":{"name":"get_report","arguments":"{\"version_id\":2}"}}]}}]}"#.into(),
+        r#"{"choices":[{"message":{"role":"assistant","content":"done-openai"}}]}"#.into(),
+    ]);
+    std::env::set_var("MIXLENS_OPENAI_BASE_URL", &url);
+    let out = run(inner.clone(), Provider::Openai, &Settings::default());
+    assert_eq!(out, "done-openai");
+    let reqs = seen.lock().unwrap().clone();
+    assert!(reqs[0].contains(r#""role":"system""#) && reqs[0].contains(r#""type":"function""#));
+    assert!(reqs[1].contains(r#""tool_call_id":"call_9""#) && reqs[1].contains("integrated_lufs"));
+    assert!(!reqs[1].contains("kblocks"), "bulky arrays are stripped before sending");
+
+    // Ollama: object arguments, no ids, then text.
+    let (url, seen) = mock_server(vec![
+        r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"section_analysis","arguments":{"version_id":2,"start_s":1.0,"end_s":4.0}}}]}}"#.into(),
+        r#"{"message":{"role":"assistant","content":"done-ollama"}}"#.into(),
+    ]);
+    let st = Settings { ollama_url: url, ..Settings::default() };
+    let out = run(inner.clone(), Provider::Ollama, &st);
+    assert_eq!(out, "done-ollama");
+    let reqs = seen.lock().unwrap().clone();
+    assert!(reqs[0].contains(r#""stream":false"#));
+    assert!(reqs[1].contains(r#""tool_name":"section_analysis""#) && reqs[1].contains("vs_integrated_lu"));
+
+    // KoboldCpp-style: tool call written as JSON text in content, no tool_calls field.
+    let (url, seen) = mock_server(vec![
+        r#"{"message":{"role":"assistant","content":"[\n{\n\"id\": \"call_001\",\n\"type\": \"function\",\n\"function\": {\n\"name\": \"get_report\",\n\"arguments\": {\n\"version_id\": 1\n}\n}\n}\n]"}}"#.into(),
+        r#"{"message":{"role":"assistant","content":"done-text-call"}}"#.into(),
+    ]);
+    let st = Settings { ollama_url: url, ..Settings::default() };
+    assert_eq!(run(inner.clone(), Provider::Ollama, &st), "done-text-call");
+    assert!(seen.lock().unwrap()[1].contains(r#""tool_name":"get_report""#));
+
+    // Tool errors are reported back to the model instead of failing the turn.
+    let (url, seen) = mock_server(vec![
+        r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_report","arguments":{"version_id":999}}}]}}"#.into(),
+        r#"{"message":{"role":"assistant","content":"recovered"}}"#.into(),
+    ]);
+    let st = Settings { ollama_url: url, ..Settings::default() };
+    assert_eq!(run(inner, Provider::Ollama, &st), "recovered");
+    assert!(seen.lock().unwrap()[1].contains("version 999 not found"));
+}
+
+#[test]
+fn text_tool_call_parsing() {
+    use crate::ai::{providers::text_tool_calls, tools};
+    let defs = tools::definitions();
+    let one = |s: &str| text_tool_calls(s, &defs).map(|c| (c[0].name.clone(), c[0].args.clone()));
+    let want = Some(("get_report".to_string(), serde_json::json!({"version_id": 1})));
+    assert_eq!(one(r#"{"name":"get_report","arguments":{"version_id":1}}"#), want);
+    assert_eq!(one(r#"{"name":"get_report","parameters":{"version_id":1}}"#), want);
+    assert_eq!(one("```json\n{\"function\":{\"name\":\"get_report\",\"arguments\":\"{\\\"version_id\\\":1}\"}}\n```"), want);
+    assert_eq!(one("<tool_call>\n{\"name\":\"get_report\",\"arguments\":{\"version_id\":1}}\n</tool_call>"), want);
+    // Ordinary answers and unknown tools stay as text.
+    assert_eq!(one("Your master is fine. Next: check the codec."), None);
+    assert_eq!(one(r#"{"name":"delete_everything","arguments":{}}"#), None);
+    assert_eq!(one(r#"{"integrated_lufs": -14.0}"#), None);
+}
