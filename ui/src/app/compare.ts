@@ -244,7 +244,13 @@ export class Compare {
     const tone = big.length
       ? ` Largest tonal differences: ${big.map((o) => `${hz(o.lo)}–${hz(o.hi)} Hz ${signed(o.delta_db)} dB`).join(', ')}.`
       : ' Every octave is within 1.5 dB of the reference.';
-    return level + tone;
+    const keys = rc.version_key && rc.reference_key && rc.version_key !== rc.reference_key
+      ? ` The reference is in ${rc.reference_key} and this song in ${rc.version_key}, so their bass notes sit at different pitches: compare the weight of the low end, not individual peaks.`
+      : '';
+    const genres = rc.version_genre && rc.reference_genre && rc.version_genre !== rc.reference_genre
+      ? ` It's also a different genre (${rc.reference_genre} vs ${rc.version_genre}).`
+      : '';
+    return level + tone + keys + genres;
   });
   readonly cur = computed(() => this.store.report()?.report ?? null);
   readonly ref = computed(() => this.store.compareReport());

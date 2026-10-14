@@ -12,12 +12,14 @@ pub mod findings;
 pub mod genre;
 pub mod key;
 pub mod report;
+pub mod streaming;
 pub mod tools;
 
 pub use audio::{decode_file, Audio};
 pub use compare::{compare, reference_compare, Comparison, ReferenceComparison};
 pub use genre::{builtin_presets, GenrePreset};
 pub use key::MusicalKey;
+pub use streaming::{builtin_platforms, Platform, StreamingReport};
 pub use report::{Finding, Kind, Report, Severity, Targets};
 
 use std::path::Path;

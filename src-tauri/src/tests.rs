@@ -4,7 +4,7 @@
 use crate::ai::{converse, Msg};
 use crate::db;
 use crate::settings::{Provider, Settings};
-use crate::state::{AudioCache, Inner, Shared};
+use crate::state::{Inner, Shared};
 use mixlens_core::{analyze_file, Kind, Targets};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -77,7 +77,7 @@ fn setup() -> (Shared, tempdir::TempDir) {
     write_wav(&a, 220.0, 0.3, 6.0);
     write_wav(&b, 220.0, 0.45, 6.0);
     let conn = db::open(&dir.0.join("t.db")).unwrap();
-    let inner = Arc::new(Inner { db: Mutex::new(conn), cache: Mutex::new(AudioCache::new(2)), http: reqwest::Client::new() });
+    let inner = Arc::new(Inner::new(conn, reqwest::Client::new()));
     {
         let c = inner.db.lock().unwrap();
         let p = db::create_project(&c, "Test").unwrap();
@@ -236,6 +236,62 @@ fn reference_versions() {
 }
 
 #[test]
+fn reference_has_own_context() {
+    use crate::commands::{refresh_project, set_version_context, set_version_kind};
+    let (inner, _dir) = setup();
+    let c = inner.db.lock().unwrap();
+    let key = |s: &str| mixlens_core::MusicalKey::parse(s);
+    db::set_project_context(&c, 1, Some("hiphop"), key("F#m").as_ref()).unwrap();
+    let ctx = |id: i64| {
+        let r = db::get_version(&c, id).unwrap().unwrap().report;
+        (r.genre_match.map(|g| g.preset_id), r.key_analysis.map(|k| k.key_name))
+    };
+
+    // Turning a version into a reference starts it with the song's context.
+    let v = set_version_kind(&c, 2, "ref", Kind::Reference).unwrap();
+    assert_eq!((v.genre.as_deref(), v.key), (Some("hiphop"), key("F#m")));
+    assert_eq!(ctx(2), (Some("hiphop".into()), Some("F# minor".into())));
+
+    // Its own context then applies to it alone.
+    let v = set_version_context(&c, 2, Some("pop".into()), key("G")).unwrap();
+    assert_eq!(v.genre.as_deref(), Some("pop"));
+    assert_eq!(ctx(2), (Some("pop".into()), Some("G major".into())));
+
+    // Changing the song's context leaves the reference alone.
+    db::set_project_context(&c, 1, Some("edm"), key("Am").as_ref()).unwrap();
+    let p = db::get_project(&c, 1).unwrap().unwrap();
+    refresh_project(&c, &p, &crate::state::load_settings(&c), &crate::state::load_presets(&c)).unwrap();
+    assert_eq!(ctx(1), (Some("edm".into()), Some("A minor".into())));
+    assert_eq!(ctx(2), (Some("pop".into()), Some("G major".into())));
+
+    // Bounces of the song can't have their own.
+    assert!(set_version_context(&c, 1, Some("pop".into()), None).is_err());
+    assert!(set_version_context(&c, 2, Some("nope".into()), None).is_err());
+    // Switching back to a mix uses the song's context again.
+    set_version_kind(&c, 2, "v2", Kind::Mix).unwrap();
+    assert_eq!(ctx(2), (Some("edm".into()), Some("A minor".into())));
+
+    // The comparison carries both sides' context.
+    set_version_kind(&c, 2, "ref", Kind::Reference).unwrap();
+    drop(c);
+    let out = crate::ai::tools::execute(&inner, "compare_versions", &serde_json::json!({"version_a": 1, "version_b": 2})).unwrap();
+    assert_eq!((out["version_key"].as_str(), out["reference_key"].as_str()), (Some("A minor"), Some("G major")));
+}
+
+#[test]
+fn deleting_a_song_removes_its_versions_and_chat() {
+    let (inner, _dir) = setup();
+    let c = inner.db.lock().unwrap();
+    let other = db::create_project(&c, "Other").unwrap();
+    db::add_message(&c, 1, "user", "hi").unwrap();
+    db::delete_project(&c, 1).unwrap();
+    assert!(db::get_project(&c, 1).unwrap().is_none());
+    assert!(db::list_versions(&c, 1).unwrap().is_empty() && db::get_version(&c, 1).unwrap().is_none());
+    assert!(db::messages(&c, 1).unwrap().is_empty());
+    assert_eq!(db::list_projects(&c).unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), vec![other.id]);
+}
+
+#[test]
 fn text_tool_call_parsing() {
     use crate::ai::{providers::text_tool_calls, tools};
     let defs = tools::definitions();
@@ -249,4 +305,42 @@ fn text_tool_call_parsing() {
     assert_eq!(one("Your master is fine. Next: check the codec."), None);
     assert_eq!(one(r#"{"name":"delete_everything","arguments":{}}"#), None);
     assert_eq!(one(r#"{"integrated_lufs": -14.0}"#), None);
+}
+
+#[test]
+fn main_platform_settings() {
+    use crate::state::{build_targets, effective_target, parse_settings};
+    // Settings saved before "main platform" existed keep their behaviour.
+    assert_eq!(parse_settings(r#"{"target_lufs": -14.0}"#).main_platform, "spotify");
+    let custom = parse_settings(r#"{"target_lufs": -16.0}"#);
+    assert_eq!((custom.main_platform.as_str(), effective_target(&custom)), ("custom", -16.0));
+    assert_eq!(parse_settings(r#"{"target_lufs": -16.0, "main_platform": "youtube"}"#).main_platform, "youtube");
+
+    let st = Settings { main_platform: "amazon".into(), ..Settings::default() };
+    let t = build_targets(&st, &[], None, None, Kind::Master);
+    assert_eq!((t.target_lufs, t.ceiling_dbtp, t.loud_ceiling_dbtp), (-14.0, -2.0, -2.0));
+    assert_eq!(t.platform.map(|p| p.id), Some("amazon".into()));
+    let t = build_targets(&custom, &[], None, None, Kind::Master);
+    assert!(t.platform.is_none() && t.target_lufs == -16.0);
+}
+
+#[test]
+fn streaming_check_tool() {
+    use mixlens_core::codec::CodecResult;
+    let (inner, _dir) = setup();
+    let out = crate::ai::tools::execute(&inner, "streaming_check", &serde_json::json!({"version_id": 1})).unwrap();
+    assert_eq!(out["platforms"].as_array().unwrap().len(), 6);
+    assert_eq!(out["encoded"], false);
+    assert_eq!(out["main_platform"], "spotify");
+
+    // Encode results from codec_check are picked up for the matching platforms.
+    let enc = |codec: &str, tp: f64| CodecResult { codec: codec.into(), label: codec.into(), true_peak_dbtp: Some(tp), integrated_lufs: None, error: None };
+    inner.codec_results.lock().unwrap().insert(1, vec![enc("ogg_q9", 0.7), enc("aac_256", -3.0)]);
+    let s = inner.streaming(1).unwrap();
+    assert!(s.encoded);
+    let peak = |id: &str| s.platforms.iter().find(|p| p.id == id).unwrap().encoded_peak_dbtp;
+    assert_eq!((peak("spotify"), peak("apple"), peak("deezer")), (Some(0.7), Some(-3.0), None));
+    assert!(s.general.iter().any(|f| f.code == "encode_clipping"));
+    inner.forget(&[1]);
+    assert!(!inner.streaming(1).unwrap().encoded);
 }

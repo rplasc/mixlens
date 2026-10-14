@@ -55,9 +55,21 @@ import { Store } from './store';
         <section>
           <h2>Analysis</h2>
           <label class="field">
-            <span>Streaming loudness target (LUFS)</span>
-            <input type="number" step="0.5" [(ngModel)]="f.target_lufs" (change)="persist()" class="short" />
+            <span>Main streaming platform</span>
+            <select [(ngModel)]="f.main_platform" (change)="persist()">
+              @for (p of store.platforms(); track p.id) {
+                <option [ngValue]="p.id">{{ p.name }} ({{ p.target_lufs }} LUFS{{ p.normalization === 'down_only' ? ', turns down only' : '' }})</option>
+              }
+              <option ngValue="custom">Custom target</option>
+            </select>
           </label>
+          @if (f.main_platform === 'custom') {
+            <label class="field">
+              <span>Loudness target (LUFS)</span>
+              <input type="number" step="0.5" [(ngModel)]="f.target_lufs" (change)="persist()" class="short" />
+            </label>
+          }
+          <p class="hint">Masters are checked against this platform's loudness target and true-peak ceiling. The Streaming tab shows every platform.</p>
           <label class="field">
             <span>ffmpeg location, for the encode check</span>
             <input [(ngModel)]="f.ffmpeg_path" (change)="persist()" placeholder="Leave empty to use ffmpeg from PATH" />
@@ -111,7 +123,7 @@ export class Settings implements OnInit {
   ngOnInit() {
     const s = this.store.settings();
     if (s) {
-      const { has_anthropic_key, has_openai_key, ffmpeg_found, keyring_ok, ...rest } = s;
+      const { has_anthropic_key, has_openai_key, ffmpeg_found, keyring_ok, effective_target_lufs, ...rest } = s;
       this.form.set({ ...rest });
     }
   }

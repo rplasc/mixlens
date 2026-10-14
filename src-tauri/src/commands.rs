@@ -36,16 +36,31 @@ pub fn rename_project(state: State<'_, Shared>, id: i64, name: String) -> R<()> 
 
 #[tauri::command]
 pub fn delete_project(state: State<'_, Shared>, id: i64) -> R<()> {
-    db::delete_project(&state.db.lock().unwrap(), id).map_err(err)
+    let c = state.db.lock().unwrap();
+    // Versions and chat go with the project (ON DELETE CASCADE); drop their decoded audio too.
+    let ids: Vec<i64> = db::list_versions(&c, id).map_err(err)?.into_iter().map(|v| v.id).collect();
+    db::delete_project(&c, id).map_err(err)?;
+    state.forget(&ids);
+    Ok(())
 }
 
 /// Re-run the (cheap) rules for every version of a project with its current context.
-fn refresh_project(c: &rusqlite::Connection, project: &Project, settings: &Settings, presets: &[GenrePreset]) -> R<()> {
+pub fn refresh_project(c: &rusqlite::Connection, project: &Project, settings: &Settings, presets: &[GenrePreset]) -> R<()> {
     for mut v in db::list_versions(c, project.id).map_err(err)? {
-        refresh_findings(&mut v.report, &state::build_targets(settings, presets, Some(project), v.kind));
+        let (genre, key) = state::version_context(Some(project), &v, v.kind);
+        let targets = state::build_targets(settings, presets, genre, key, v.kind);
+        refresh_findings(&mut v.report, &targets);
         db::update_version(c, v.id, &v.label, v.kind, &v.report).map_err(err)?;
     }
     Ok(())
+}
+
+/// Empty means "not set"; anything else must name a known preset.
+fn check_genre(presets: &[GenrePreset], genre: Option<String>) -> R<Option<String>> {
+    match genre.filter(|g| !g.is_empty()) {
+        Some(g) if !presets.iter().any(|p| p.id == g) => Err(format!("unknown genre preset '{g}'")),
+        g => Ok(g),
+    }
 }
 
 #[tauri::command]
@@ -60,12 +75,7 @@ pub async fn update_project_context(state: State<'_, Shared>, id: i64, genre: Op
     blocking(move || {
         let c = s.db.lock().unwrap();
         let presets = state::load_presets(&c);
-        let genre = genre.filter(|g| !g.is_empty());
-        if let Some(g) = &genre {
-            if !presets.iter().any(|p| &p.id == g) {
-                return Err(format!("unknown genre preset '{g}'"));
-            }
-        }
+        let genre = check_genre(&presets, genre)?;
         db::set_project_context(&c, id, genre.as_deref(), key.as_ref()).map_err(err)?;
         let project = db::get_project(&c, id).map_err(err)?.ok_or_else(|| format!("project {id} not found"))?;
         refresh_project(&c, &project, &state::load_settings(&c), &presets)?;
@@ -82,7 +92,7 @@ pub fn list_versions(state: State<'_, Shared>, project_id: i64) -> R<Vec<Version
     Ok(db::list_versions(&c, project_id)
         .map_err(err)?
         .into_iter()
-        .map(|v| db::summarize(v.id, v.project_id, v.label, v.path, v.kind, v.created_at, &v.report))
+        .map(|v| db::summarize(&v))
         .collect())
 }
 
@@ -98,7 +108,15 @@ pub async fn add_version(state: State<'_, Shared>, project_id: i64, path: String
         let (audio, report) = mixlens_core::analyze_file(p, &targets).map_err(err)?;
         let summary = {
             let c = s.db.lock().unwrap();
-            db::insert_version(&c, project_id, &label, &path, kind, &report).map_err(err)?
+            let mut summary = db::insert_version(&c, project_id, &label, &path, kind, &report).map_err(err)?;
+            if kind == Kind::Reference {
+                // A new reference starts with the song's genre and key; it can be changed on its own.
+                if let Some(p) = db::get_project(&c, project_id).map_err(err)? {
+                    db::set_version_context(&c, summary.id, p.genre.as_deref(), p.key.as_ref()).map_err(err)?;
+                    (summary.genre, summary.key) = (p.genre, p.key);
+                }
+            }
+            summary
         };
         s.cache.lock().unwrap().put(summary.id, Arc::new(audio));
         Ok(summary)
@@ -118,18 +136,51 @@ pub fn guess_kind(stem: &str) -> Kind {
     }
 }
 
+/// Relabel a version or change its kind, and re-run its rules. A version that becomes a
+/// reference without a genre or key of its own starts with the song's.
+pub fn set_version_kind(c: &rusqlite::Connection, id: i64, label: &str, kind: Kind) -> R<VersionSummary> {
+    let mut v = db::get_version(c, id).map_err(err)?.ok_or_else(|| format!("version {id} not found"))?;
+    if kind == Kind::Reference && v.kind != Kind::Reference && v.genre.is_none() && v.key.is_none() {
+        if let Some(p) = db::get_project(c, v.project_id).map_err(err)? {
+            db::set_version_context(c, id, p.genre.as_deref(), p.key.as_ref()).map_err(err)?;
+            (v.genre, v.key) = (p.genre, p.key);
+        }
+    }
+    let targets = state::targets_for_row(c, &v, kind);
+    refresh_findings(&mut v.report, &targets);
+    (v.label, v.kind) = (label.to_string(), kind);
+    db::update_version(c, id, label, kind, &v.report).map_err(err)?;
+    Ok(db::summarize(&v))
+}
+
 #[tauri::command]
 pub fn update_version(state: State<'_, Shared>, id: i64, label: String, kind: Kind) -> R<VersionSummary> {
-    let mut v = state.version(id)?;
-    refresh_findings(&mut v.report, &state.targets_for(v.project_id, kind));
-    let c = state.db.lock().unwrap();
-    db::update_version(&c, id, label.trim(), kind, &v.report).map_err(err)?;
-    Ok(db::summarize(id, v.project_id, label.trim().to_string(), v.path, kind, v.created_at, &v.report))
+    set_version_kind(&state.db.lock().unwrap(), id, label.trim(), kind)
+}
+
+/// Set a reference track's own genre and key, then refresh its findings.
+pub fn set_version_context(c: &rusqlite::Connection, id: i64, genre: Option<String>, key: Option<MusicalKey>) -> R<VersionSummary> {
+    let genre = check_genre(&state::load_presets(c), genre)?;
+    let mut v = db::get_version(c, id).map_err(err)?.ok_or_else(|| format!("version {id} not found"))?;
+    if v.kind != Kind::Reference {
+        return Err("Only reference tracks have their own genre and key; this version uses the song's.".into());
+    }
+    db::set_version_context(c, id, genre.as_deref(), key.as_ref()).map_err(err)?;
+    (v.genre, v.key) = (genre, key);
+    let targets = state::targets_for_row(c, &v, v.kind);
+    refresh_findings(&mut v.report, &targets);
+    db::update_version(c, id, &v.label, v.kind, &v.report).map_err(err)?;
+    Ok(db::summarize(&v))
+}
+
+#[tauri::command]
+pub fn update_version_context(state: State<'_, Shared>, id: i64, genre: Option<String>, key: Option<MusicalKey>) -> R<VersionSummary> {
+    set_version_context(&state.db.lock().unwrap(), id, genre, key)
 }
 
 #[tauri::command]
 pub fn delete_version(state: State<'_, Shared>, id: i64) -> R<()> {
-    state.cache.lock().unwrap().remove(id);
+    state.forget(&[id]);
     db::delete_version(&state.db.lock().unwrap(), id).map_err(err)
 }
 
@@ -194,17 +245,30 @@ pub async fn codec_check(state: State<'_, Shared>, id: i64) -> R<Value> {
     blocking(move || ai::tools::execute(&s, "codec_check", &json!({"version_id": id}))).await
 }
 
+#[tauri::command]
+pub fn list_platforms() -> Vec<mixlens_core::Platform> {
+    mixlens_core::builtin_platforms()
+}
+
+/// How each platform will play this version, using the latest encode check if one ran.
+#[tauri::command]
+pub fn streaming_report(state: State<'_, Shared>, id: i64) -> R<mixlens_core::StreamingReport> {
+    state.streaming(id)
+}
+
 // ---------- settings ----------
 
 fn settings_view(s: &Shared) -> SettingsView {
     let st = s.settings();
     let ff = codec::find_ffmpeg(Some(st.ffmpeg_path.as_str()).filter(|p| !p.is_empty())).is_some();
+    let effective_target_lufs = state::effective_target(&st);
     SettingsView {
         settings: st,
         has_anthropic_key: settings::get_key(Provider::Anthropic).is_some(),
         has_openai_key: settings::get_key(Provider::Openai).is_some(),
         ffmpeg_found: ff,
         keyring_ok: settings::keyring_available(),
+        effective_target_lufs,
     }
 }
 
@@ -224,7 +288,7 @@ pub async fn save_settings(state: State<'_, Shared>, settings: Settings) -> R<Se
             db::set_setting(&c, "settings", &serde_json::to_string(&settings).map_err(err)?).map_err(err)?;
         }
         // Target loudness affects findings; re-run the (cheap) rules for every version.
-        if (old.target_lufs - settings.target_lufs).abs() > 1e-9 {
+        if (old.target_lufs - settings.target_lufs).abs() > 1e-9 || old.main_platform != settings.main_platform {
             let c = s.db.lock().unwrap();
             let presets = state::load_presets(&c);
             for p in db::list_projects(&c).map_err(err)? {

@@ -13,11 +13,14 @@ pub struct CodecResult {
     pub error: Option<String>,
 }
 
-const PRESETS: [(&str, &str, &[&str], &str); 4] = [
+/// (id, label, ffmpeg encoder args, container). Platform cards map their streams to these ids.
+pub const PRESETS: [(&str, &str, &[&str], &str); 6] = [
     ("ogg_q5", "Ogg Vorbis q5 (~160 kbps, Spotify High)", &["-c:a", "libvorbis", "-q:a", "5"], "ogg"),
     ("ogg_q9", "Ogg Vorbis q9 (~320 kbps, Spotify Very High)", &["-c:a", "libvorbis", "-q:a", "9"], "ogg"),
-    ("aac_256", "AAC 256 kbps (Apple Music, YouTube)", &["-c:a", "aac", "-b:a", "256k"], "m4a"),
+    ("aac_256", "AAC 256 kbps (Apple Music, Amazon, Tidal)", &["-c:a", "aac", "-b:a", "256k"], "m4a"),
     ("aac_128", "AAC 128 kbps (low-bitrate streams)", &["-c:a", "aac", "-b:a", "128k"], "m4a"),
+    ("opus_128", "Opus 128 kbps (YouTube)", &["-c:a", "libopus", "-b:a", "128k"], "opus"),
+    ("mp3_320", "MP3 320 kbps (Deezer)", &["-c:a", "libmp3lame", "-b:a", "320k"], "mp3"),
 ];
 
 fn command(bin: &Path) -> Command {

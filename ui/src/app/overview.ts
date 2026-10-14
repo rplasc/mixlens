@@ -28,7 +28,7 @@ const READING_CODES: Record<string, string[]> = {
         </div>
         <ml-loudness-bridge
           [values]="r.loudness.short_term" [hop]="r.loudness.short_term_hop_s" [sections]="r.sections"
-          [integrated]="r.loudness.integrated_lufs" [target]="isMaster() ? (store.settings()?.target_lufs ?? -14) : null"
+          [integrated]="r.loudness.integrated_lufs" [target]="isMaster() ? target() : null"
           [duration]="r.file.duration_s" [clickable]="true" [selected]="store.sectionIndex()"
           (sectionClick)="store.inspectSection($event)" />
       </section>
@@ -81,33 +81,8 @@ const READING_CODES: Record<string, string[]> = {
             </tbody>
           </table>
 
-          <div class="codec">
-            <div class="codec-head">
-              <h2>Streaming encode check</h2>
-              <button (click)="store.runCodec()" [disabled]="store.codecBusy()">
-                {{ store.codecBusy() ? 'Encoding…' : store.codec() ? 'Run again' : 'Run check' }}
-              </button>
-            </div>
-            <p class="muted">Encodes to Ogg and AAC with ffmpeg and measures the peaks listeners will actually get.</p>
-            @if (store.codec(); as rows) {
-              <table class="data">
-                <thead><tr><th>Encode</th><th class="n">True peak</th><th class="n">Loudness</th></tr></thead>
-                <tbody>
-                  @for (c of rows; track c.codec) {
-                    <tr>
-                      <td>{{ c.label }}</td>
-                      @if (c.error) { <td colspan="2" class="sev-error">{{ c.error }}</td> }
-                      @else {
-                        <td class="n" [class.sev-error]="(c.true_peak_dbtp ?? -99) > 0" [class.sev-warn]="(c.true_peak_dbtp ?? -99) > -0.5 && (c.true_peak_dbtp ?? -99) <= 0">
-                          {{ num(c.true_peak_dbtp) }} dBTP</td>
-                        <td class="n">{{ num(c.integrated_lufs) }} LUFS</td>
-                      }
-                    </tr>
-                  }
-                </tbody>
-              </table>
-            }
-          </div>
+          <p class="streaming-link muted">How each streaming platform will play this, and the encode check, are on the
+            <button class="link" (click)="store.tab.set('streaming')">Streaming tab</button>.</p>
         </section>
       </div>
     }
@@ -129,10 +104,8 @@ const READING_CODES: Record<string, string[]> = {
     li[data-sev='warn'] .dot { background: var(--warn); }
     li[data-sev='ok'] .dot { background: var(--ok); }
     li[data-sev='info'] .dot { background: var(--info); }
-    .codec { margin-top: 22px; }
-    .codec-head { display: flex; align-items: center; justify-content: space-between; }
-    .codec-head h2 { margin: 0; }
-    .codec p { font-size: 12px; margin: 4px 0 8px; }
+    .streaming-link { font-size: 12px; margin-top: 18px; }
+    .link { background: none; border: none; padding: 0; color: var(--a); text-decoration: underline; font-size: inherit; cursor: pointer; }
     @media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } }
   `,
 })
@@ -143,6 +116,12 @@ export class Overview {
   readonly time = time;
   readonly r = computed(() => this.store.report()?.report ?? null);
   readonly isMaster = computed(() => this.store.report()?.kind === 'master');
+  readonly target = computed(() => this.store.settings()?.effective_target_lufs ?? -14);
+  /** "Spotify −14" or "target −16" for a custom target. */
+  readonly targetNote = computed(() => {
+    const name = this.store.platforms().find((p) => p.id === this.store.settings()?.main_platform)?.name ?? 'target';
+    return `${name} ${num(this.target(), 0)}`;
+  });
 
   fmtFormat(r: Report) {
     return format(r.file.sample_format, r.file.sample_rate);
@@ -162,9 +141,8 @@ export class Overview {
     const l = r.loudness;
     const s = r.stereo;
     const f = r.findings;
-    const target = this.store.settings()?.target_lufs ?? -14;
     return [
-      { label: 'Integrated', value: num(l.integrated_lufs), unit: 'LUFS', note: this.isMaster() ? `target ${num(target, 0)}` : undefined, severity: this.sevFor('Integrated', f) },
+      { label: 'Integrated', value: num(l.integrated_lufs), unit: 'LUFS', note: this.isMaster() ? this.targetNote() : undefined, severity: this.sevFor('Integrated', f) },
       { label: 'True peak', value: num(l.true_peak_dbtp), unit: 'dBTP', severity: this.sevFor('True peak', f) },
       { label: 'Loudness range', value: num(l.lra_lu), unit: 'LU' },
       { label: 'PLR', value: num(l.plr_db), unit: 'dB', note: 'peak to loudness', severity: this.sevFor('PLR', f) },

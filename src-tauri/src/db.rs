@@ -55,6 +55,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 2 {
+        // Reference tracks carry their own genre and key, since they can differ from the song's.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE versions ADD COLUMN genre TEXT;
+             ALTER TABLE versions ADD COLUMN song_key TEXT;
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -78,6 +88,9 @@ pub struct VersionSummary {
     pub path: String,
     pub kind: Kind,
     pub created_at: String,
+    /// Own genre preset id and key; only used for references (other versions use the song's).
+    pub genre: Option<String>,
+    pub key: Option<MusicalKey>,
     pub integrated_lufs: f64,
     pub true_peak_dbtp: f64,
     pub lra_lu: f64,
@@ -113,17 +126,20 @@ pub fn parse_kind(s: &str) -> Kind {
     }
 }
 
-pub fn summarize(id: i64, project_id: i64, label: String, path: String, kind: Kind, created_at: String, r: &Report) -> VersionSummary {
+pub fn summarize(v: &VersionRow) -> VersionSummary {
+    let r = &v.report;
     let errors = r.findings.iter().filter(|f| f.severity == Severity::Error).count();
     let warnings = r.findings.iter().filter(|f| f.severity == Severity::Warn).count();
     VersionSummary {
-        id,
-        project_id,
-        label,
+        id: v.id,
+        project_id: v.project_id,
+        label: v.label.clone(),
         file_name: r.file.file_name.clone(),
-        path,
-        kind,
-        created_at,
+        path: v.path.clone(),
+        kind: v.kind,
+        created_at: v.created_at.clone(),
+        genre: v.genre.clone(),
+        key: v.key,
         integrated_lufs: r.loudness.integrated_lufs,
         true_peak_dbtp: r.loudness.true_peak_dbtp,
         lra_lu: r.loudness.lra_lu,
@@ -138,15 +154,22 @@ pub fn summarize(id: i64, project_id: i64, label: String, path: String, kind: Ki
 
 const PROJECT_COLS: &str = "p.id, p.name, p.created_at, (SELECT COUNT(*) FROM versions v WHERE v.project_id = p.id), p.genre, p.song_key";
 
+fn parse_key(json: Option<String>) -> Option<MusicalKey> {
+    json.and_then(|k| serde_json::from_str(&k).ok())
+}
+
+fn key_json(key: Option<&MusicalKey>) -> Option<String> {
+    key.map(|k| serde_json::to_string(k).expect("key serializes"))
+}
+
 fn row_to_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
-    let key: Option<String> = r.get(5)?;
     Ok(Project {
         id: r.get(0)?,
         name: r.get(1)?,
         created_at: r.get(2)?,
         version_count: r.get(3)?,
         genre: r.get(4)?,
-        key: key.and_then(|k| serde_json::from_str(&k).ok()),
+        key: parse_key(r.get(5)?),
     })
 }
 
@@ -166,8 +189,7 @@ pub fn create_project(c: &Connection, name: &str) -> rusqlite::Result<Project> {
 }
 
 pub fn set_project_context(c: &Connection, id: i64, genre: Option<&str>, key: Option<&MusicalKey>) -> rusqlite::Result<()> {
-    let key = key.map(|k| serde_json::to_string(k).expect("key serializes"));
-    c.execute("UPDATE projects SET genre = ?1, song_key = ?2 WHERE id = ?3", params![genre, key, id]).map(|_| ())
+    c.execute("UPDATE projects SET genre = ?1, song_key = ?2 WHERE id = ?3", params![genre, key_json(key), id]).map(|_| ())
 }
 
 pub fn rename_project(c: &Connection, id: i64, name: &str) -> rusqlite::Result<()> {
@@ -184,9 +206,11 @@ pub fn insert_version(c: &Connection, project_id: i64, label: &str, path: &str, 
         "INSERT INTO versions (project_id, label, path, hash, kind, report_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![project_id, label, path, r.file.hash, kind_str(kind), json],
     )?;
-    let id = c.last_insert_rowid();
-    let created: String = c.query_row("SELECT created_at FROM versions WHERE id = ?1", params![id], |r| r.get(0))?;
-    Ok(summarize(id, project_id, label.to_string(), path.to_string(), kind, created, r))
+    Ok(summarize(&get_version(c, c.last_insert_rowid())?.expect("just inserted")))
+}
+
+pub fn set_version_context(c: &Connection, id: i64, genre: Option<&str>, key: Option<&MusicalKey>) -> rusqlite::Result<()> {
+    c.execute("UPDATE versions SET genre = ?1, song_key = ?2 WHERE id = ?3", params![genre, key_json(key), id]).map(|_| ())
 }
 
 pub struct VersionRow {
@@ -196,6 +220,8 @@ pub struct VersionRow {
     pub path: String,
     pub kind: Kind,
     pub created_at: String,
+    pub genre: Option<String>,
+    pub key: Option<MusicalKey>,
     pub report: Report,
 }
 
@@ -211,10 +237,12 @@ fn row_to_version(r: &rusqlite::Row) -> rusqlite::Result<VersionRow> {
         kind: parse_kind(&r.get::<_, String>(4)?),
         report,
         created_at: r.get(6)?,
+        genre: r.get(7)?,
+        key: parse_key(r.get(8)?),
     })
 }
 
-const VERSION_COLS: &str = "id, project_id, label, path, kind, report_json, created_at";
+const VERSION_COLS: &str = "id, project_id, label, path, kind, report_json, created_at, genre, song_key";
 
 pub fn get_version(c: &Connection, id: i64) -> rusqlite::Result<Option<VersionRow>> {
     c.query_row(&format!("SELECT {VERSION_COLS} FROM versions WHERE id = ?1"), params![id], row_to_version).optional()

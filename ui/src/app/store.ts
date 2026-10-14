@@ -1,16 +1,17 @@
 import { Injectable, computed, signal } from '@angular/core';
 import {
-  api, ChatMessage, CodecResult, Comparison, errorText, GenrePreset, inTauri, Kind, MusicalKey, Project,
-  ReferenceComparison, ReportEnvelope, SectionAnalysis, SettingsView, VersionSummary,
+  api, ChatMessage, CodecResult, Comparison, errorText, GenrePreset, inTauri, Kind, MusicalKey, Platform, Project,
+  ReferenceComparison, ReportEnvelope, SectionAnalysis, SettingsView, StreamingReport, VersionSummary,
 } from './api';
 
-export type Tab = 'overview' | 'spectrum' | 'stereo' | 'compare';
+export type Tab = 'overview' | 'spectrum' | 'stereo' | 'streaming' | 'compare';
 
 const TOOL_LABELS: Record<string, string> = {
   get_report: 'Reading the report',
   compare_versions: 'Comparing versions',
   section_analysis: 'Measuring a section',
   codec_check: 'Encoding test files',
+  streaming_check: 'Checking streaming platforms',
 };
 
 @Injectable({ providedIn: 'root' })
@@ -30,6 +31,8 @@ export class Store {
 
   readonly codec = signal<CodecResult[] | null>(null);
   readonly codecBusy = signal(false);
+  readonly streaming = signal<StreamingReport | null>(null);
+  readonly platforms = signal<Platform[]>([]);
   readonly section = signal<SectionAnalysis | null>(null);
   readonly sectionIndex = signal<number | null>(null);
 
@@ -52,6 +55,12 @@ export class Store {
   readonly mixVersions = computed(() => this.versions().filter((v) => v.kind !== 'reference'));
   readonly references = computed(() => this.versions().filter((v) => v.kind === 'reference'));
   readonly genre = computed(() => this.presets().find((g) => g.id === this.project()?.genre) ?? null);
+  /** Genre and key the header edits: a reference's own, otherwise the song's. */
+  readonly context = computed(() => {
+    const v = this.version();
+    const src = v?.kind === 'reference' ? v : this.project();
+    return { reference: v?.kind === 'reference', genre: src?.genre ?? null, key: src?.key ?? null };
+  });
   /** The comparison in view is against a reference track rather than another bounce. */
   readonly comparingReference = computed(() => {
     const kind = (id: number | null) => this.versions().find((v) => v.id === id)?.kind;
@@ -62,6 +71,7 @@ export class Store {
     try {
       this.settings.set(await api.getSettings());
       this.presets.set(await api.listGenrePresets());
+      this.platforms.set(await api.listPlatforms());
       const projects = await api.listProjects();
       this.projects.set(projects);
       if (projects.length) await this.selectProject(projects[0].id);
@@ -117,7 +127,12 @@ export class Store {
   async deleteProject() {
     const id = this.projectId();
     if (id == null) return;
-    await api.deleteProject(id);
+    try {
+      await api.deleteProject(id);
+    } catch (e) {
+      this.fail(e);
+      return;
+    }
     this.projectId.set(null);
     this.versions.set([]);
     this.versionId.set(null);
@@ -144,6 +159,19 @@ export class Store {
     }
   }
 
+  /** Sets the selected reference's own genre and key, or the song's for any other version. */
+  async setContext(genre: string | null, key: MusicalKey | null) {
+    const v = this.version();
+    if (v?.kind !== 'reference') return this.setSongContext(genre, key);
+    try {
+      const next = await api.updateVersionContext(v.id, genre, key);
+      this.versions.update((list) => list.map((x) => (x.id === v.id ? next : x)));
+      this.report.set(await api.getReport(v.id));
+    } catch (e) {
+      this.fail(e);
+    }
+  }
+
   async setSongContext(genre: string | null, key: MusicalKey | null) {
     const pid = this.projectId();
     if (pid == null) return;
@@ -165,6 +193,7 @@ export class Store {
     this.comparison.set(null);
     this.refComparison.set(null);
     this.codec.set(null);
+    this.streaming.set(null);
     this.section.set(null);
     this.sectionIndex.set(null);
   }
@@ -183,6 +212,7 @@ export class Store {
     try {
       this.report.set(await api.getReport(id));
       if (this.tab() === 'compare') await this.runCompare();
+      if (this.tab() === 'streaming') await this.loadStreaming();
     } catch (e) {
       this.fail(e);
     }
@@ -248,6 +278,7 @@ export class Store {
       const v = await api.updateVersion(id, label, kind);
       this.versions.update((list) => list.map((x) => (x.id === id ? v : x)));
       this.report.set(await api.getReport(id));
+      if (this.streaming()) await this.loadStreaming();
     } catch (e) {
       this.fail(e);
     }
@@ -298,10 +329,22 @@ export class Store {
     this.codecBusy.set(true);
     try {
       this.codec.set(await api.codecCheck(id));
+      await this.loadStreaming();
     } catch (e) {
       this.fail(e);
     } finally {
       this.codecBusy.set(false);
+    }
+  }
+
+  /** Per-platform breakdown; uses the latest encode check when one has run. */
+  async loadStreaming() {
+    const id = this.versionId();
+    if (id == null) return;
+    try {
+      this.streaming.set(await api.streamingReport(id));
+    } catch (e) {
+      this.fail(e);
     }
   }
 

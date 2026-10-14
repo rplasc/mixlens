@@ -2,9 +2,10 @@
 
 use crate::db;
 use crate::settings::Settings;
-use mixlens_core::{builtin_presets, Audio, GenrePreset, Kind, Targets};
+use mixlens_core::codec::CodecResult;
+use mixlens_core::{builtin_platforms, builtin_presets, streaming, Audio, GenrePreset, Kind, MusicalKey, Platform, StreamingReport, Targets};
 use rusqlite::Connection;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -39,6 +40,8 @@ pub struct Inner {
     pub db: Mutex<Connection>,
     pub cache: Mutex<AudioCache>,
     pub http: reqwest::Client,
+    /// Latest encode-check results per version (in memory only).
+    pub codec_results: Mutex<HashMap<i64, Vec<CodecResult>>>,
 }
 
 pub type Shared = Arc<Inner>;
@@ -48,7 +51,29 @@ pub fn err<E: std::fmt::Display>(e: E) -> String {
 }
 
 pub fn load_settings(c: &Connection) -> Settings {
-    db::get_setting(c, "settings").ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    db::get_setting(c, "settings").ok().flatten().map(|s| parse_settings(&s)).unwrap_or_default()
+}
+
+/// Settings saved before "main platform" existed keep their behaviour: the default -14 LUFS
+/// target becomes Spotify (same target and ceilings), anything else stays a custom target.
+pub fn parse_settings(raw: &str) -> Settings {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(raw) else { return Settings::default() };
+    if let Some(o) = v.as_object_mut() {
+        if !o.contains_key("main_platform") {
+            let t = o.get("target_lufs").and_then(|x| x.as_f64()).unwrap_or(-14.0);
+            o.insert("main_platform".into(), (if (t + 14.0).abs() < 1e-6 { "spotify" } else { "custom" }).into());
+        }
+    }
+    serde_json::from_value(v).unwrap_or_default()
+}
+
+/// The chosen main platform; None for a custom target.
+pub fn main_platform(settings: &Settings) -> Option<Platform> {
+    builtin_platforms().into_iter().find(|p| p.id == settings.main_platform)
+}
+
+pub fn effective_target(settings: &Settings) -> f64 {
+    main_platform(settings).map_or(settings.target_lufs, |p| p.target_lufs)
 }
 
 /// Built-in genre presets, with user presets (settings key `genre_presets`) layered on top:
@@ -67,24 +92,72 @@ pub fn load_presets(c: &Connection) -> Vec<GenrePreset> {
     out
 }
 
-/// Rules context for a version: the streaming target plus its song's genre and key.
-pub fn build_targets(settings: &Settings, presets: &[GenrePreset], project: Option<&db::Project>, kind: Kind) -> Targets {
-    Targets {
-        kind,
-        target_lufs: settings.target_lufs,
-        genre: project.and_then(|p| p.genre.as_deref()).and_then(|id| presets.iter().find(|g| g.id == id)).cloned(),
-        key: project.and_then(|p| p.key),
-        ..Targets::default()
+/// Genre and key that apply to a version: a reference carries its own (it's a different
+/// song), every other version uses its song's.
+pub fn version_context<'a>(project: Option<&'a db::Project>, v: &'a db::VersionRow, kind: Kind) -> (Option<&'a str>, Option<MusicalKey>) {
+    if kind == Kind::Reference {
+        (v.genre.as_deref(), v.key)
+    } else {
+        (project.and_then(|p| p.genre.as_deref()), project.and_then(|p| p.key))
     }
 }
 
-/// Targets for a version, using an already-locked connection.
+/// Rules context: the streaming target plus a genre preset id and key.
+pub fn build_targets(settings: &Settings, presets: &[GenrePreset], genre: Option<&str>, key: Option<MusicalKey>, kind: Kind) -> Targets {
+    let d = Targets::default();
+    let platform = main_platform(settings);
+    let (target_lufs, ceiling_dbtp, loud_ceiling_dbtp) = match &platform {
+        Some(p) => (p.target_lufs, p.ceiling_dbtp, p.loud_ceiling_dbtp.unwrap_or(p.ceiling_dbtp)),
+        None => (settings.target_lufs, d.ceiling_dbtp, d.loud_ceiling_dbtp),
+    };
+    Targets {
+        kind,
+        target_lufs,
+        ceiling_dbtp,
+        loud_ceiling_dbtp,
+        genre: genre.and_then(|id| presets.iter().find(|g| g.id == id)).cloned(),
+        key,
+        platform,
+    }
+}
+
+/// Targets with the song's own context, for a file being added (new references start with
+/// the song's genre and key). Uses an already-locked connection.
 pub fn targets_in(c: &Connection, project_id: i64, kind: Kind) -> Targets {
     let project = db::get_project(c, project_id).ok().flatten();
-    build_targets(&load_settings(c), &load_presets(c), project.as_ref(), kind)
+    let (genre, key) = (project.as_ref().and_then(|p| p.genre.as_deref()), project.as_ref().and_then(|p| p.key));
+    build_targets(&load_settings(c), &load_presets(c), genre, key, kind)
+}
+
+/// Targets for an existing version analyzed as `kind`.
+pub fn targets_for_row(c: &Connection, v: &db::VersionRow, kind: Kind) -> Targets {
+    let project = db::get_project(c, v.project_id).ok().flatten();
+    let (genre, key) = version_context(project.as_ref(), v, kind);
+    build_targets(&load_settings(c), &load_presets(c), genre, key, kind)
 }
 
 impl Inner {
+    pub fn new(db: Connection, http: reqwest::Client) -> Self {
+        Self { db: Mutex::new(db), cache: Mutex::new(AudioCache::new(2)), http, codec_results: Mutex::new(HashMap::new()) }
+    }
+
+    /// Per-platform playback and requirements, using the latest encode check if one ran.
+    pub fn streaming(&self, id: i64) -> Result<StreamingReport, String> {
+        let v = self.version(id)?;
+        let encoded = self.codec_results.lock().unwrap().get(&id).cloned();
+        Ok(streaming::assess(&v.report, v.kind, &builtin_platforms(), encoded.as_deref()))
+    }
+
+    /// Forget per-version results when versions go away.
+    pub fn forget(&self, ids: &[i64]) {
+        let mut cache = self.cache.lock().unwrap();
+        let mut codec = self.codec_results.lock().unwrap();
+        for id in ids {
+            cache.remove(*id);
+            codec.remove(id);
+        }
+    }
+
     pub fn settings(&self) -> Settings {
         load_settings(&self.db.lock().unwrap())
     }

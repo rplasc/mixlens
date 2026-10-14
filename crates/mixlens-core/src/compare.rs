@@ -334,6 +334,11 @@ pub fn compare(a: &Audio, ra: &Report, b_in: &Audio, rb: &Report) -> Result<Comp
 pub struct ReferenceComparison {
     pub version_file: String,
     pub reference_file: String,
+    /// Each side's key and genre preset name, when set. They can differ: the reference is another song.
+    pub version_key: Option<String>,
+    pub reference_key: Option<String>,
+    pub version_genre: Option<String>,
+    pub reference_genre: Option<String>,
     /// Reference loudness minus version loudness (LU): turn the reference down this much to A/B fairly.
     pub level_match_db: f64,
     pub octave: Vec<OctaveCompare>,
@@ -392,6 +397,10 @@ pub fn reference_compare(rv: &Report, rr: &Report) -> ReferenceComparison {
     ReferenceComparison {
         version_file: rv.file.file_name.clone(),
         reference_file: rr.file.file_name.clone(),
+        version_key: rv.key_analysis.as_ref().map(|k| k.key_name.clone()),
+        reference_key: rr.key_analysis.as_ref().map(|k| k.key_name.clone()),
+        version_genre: rv.genre_match.as_ref().map(|g| g.preset_name.clone()),
+        reference_genre: rr.genre_match.as_ref().map(|g| g.preset_name.clone()),
         level_match_db: lr.integrated_lufs - lv.integrated_lufs,
         octave,
         third_octave_delta,

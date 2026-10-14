@@ -1,5 +1,5 @@
 import { Component, inject, signal } from '@angular/core';
-import { num } from './fmt';
+import { keyName, num } from './fmt';
 import { Store } from './store';
 
 @Component({
@@ -25,12 +25,24 @@ import { Store } from './store';
       }
       <ul class="projects">
         @for (p of store.projects(); track p.id) {
-          <li>
-            <button class="item" [class.on]="p.id === store.projectId()" (click)="store.selectProject(p.id)">
+          <li class="project">
+            <button class="item" [class.on]="p.id === store.projectId()" (click)="select(p.id)">
               <span class="name">{{ p.name }}</span>
               <span class="count">{{ p.version_count }}</span>
             </button>
+            @if (p.id === store.projectId() && !confirmDelete()) {
+              <button class="ghost small del" (click)="confirmDelete.set(true)" [attr.aria-label]="'Delete ' + p.name">Delete</button>
+            }
           </li>
+          @if (p.id === store.projectId() && confirmDelete()) {
+            <li class="confirm" role="alert" (keydown.escape)="confirmDelete.set(false)">
+              <p>Delete <strong>{{ p.name }}</strong>, its {{ p.version_count }} {{ p.version_count === 1 ? 'version' : 'versions' }} and assistant chat? Your audio files stay on disk.</p>
+              <div class="row">
+                <button class="danger small" (click)="remove()" [disabled]="deleting()">{{ deleting() ? 'Deleting…' : 'Delete song' }}</button>
+                <button class="ghost small" (click)="confirmDelete.set(false)">Keep</button>
+              </div>
+            </li>
+          }
         } @empty {
           @if (!creating()) { <li class="muted empty">Drop audio files anywhere to start.</li> }
         }
@@ -73,7 +85,7 @@ import { Store } from './store';
                 <span class="status ref" aria-hidden="true"></span>
                 <span class="label">{{ v.label }}</span>
                 <span class="kind ref">ref</span>
-                <span class="meta">{{ num(v.integrated_lufs) }} LUFS, {{ num(v.true_peak_dbtp) }} dBTP</span>
+                <span class="meta">{{ num(v.integrated_lufs) }} LUFS{{ v.key ? ', ' + keyName(v.key) : '' }}</span>
               </button>
             </li>
           } @empty {
@@ -96,6 +108,14 @@ import { Store } from './store';
     .item { display: flex; width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: var(--radius-s); padding: 6px 8px; gap: 8px; align-items: baseline; }
     .item:hover { background: var(--panel); border-color: transparent; }
     .item.on { background: var(--raised); border-color: var(--line); }
+    .project { display: flex; align-items: center; gap: 2px; }
+    .project .item { flex: 1; min-width: 0; }
+    .del { color: var(--faint); }
+    .del:hover { color: var(--err); }
+    .confirm { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid var(--err); border-radius: var(--radius-s); background: var(--panel); font-size: 12px; }
+    .confirm p { color: var(--muted); margin-bottom: 8px; }
+    .confirm .row { display: flex; gap: 6px; }
+    .danger { border-color: var(--err); color: var(--err); background: transparent; }
     .projects .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .count { color: var(--faint); font-size: 12px; }
     .versions { flex: 1; min-height: 0; overflow-y: auto; }
@@ -120,7 +140,25 @@ import { Store } from './store';
 export class Sidebar {
   readonly store = inject(Store);
   readonly creating = signal(false);
+  readonly confirmDelete = signal(false);
+  readonly deleting = signal(false);
   readonly num = num;
+  readonly keyName = keyName;
+
+  select(id: number) {
+    this.confirmDelete.set(false);
+    void this.store.selectProject(id);
+  }
+
+  async remove() {
+    this.deleting.set(true);
+    try {
+      await this.store.deleteProject();
+    } finally {
+      this.deleting.set(false);
+      this.confirmDelete.set(false);
+    }
+  }
 
   async create(ev: Event, name: string) {
     ev.preventDefault();

@@ -13,6 +13,9 @@
   --warn: #f0a04b;
   --err: #e8665f;
   --info: #9db4c8;
+  /* Diverging pair for volume changes (validated for the dark panel surface). */
+  --gain-up: #b88923;
+  --gain-down: #1896ad;
   --focus: #e9c46a;
   --radius-s: 4px;
   --radius-m: 8px;

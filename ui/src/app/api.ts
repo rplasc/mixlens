@@ -29,6 +29,8 @@ export interface KeyAnalysis {
 
 export interface VersionSummary {
   id: number; project_id: number; label: string; file_name: string; path: string; kind: Kind;
+  /** A reference's own genre preset id and key; other versions use the song's. */
+  genre: string | null; key: MusicalKey | null;
   created_at: string; integrated_lufs: number; true_peak_dbtp: number; lra_lu: number;
   duration_s: number; sample_rate: number; sample_format: string; worst: Severity;
   errors: number; warnings: number;
@@ -92,6 +94,7 @@ export interface Comparison {
 
 export interface ReferenceComparison {
   version_file: string; reference_file: string; version_id: number; reference_id: number; level_match_db: number;
+  version_key: string | null; reference_key: string | null; version_genre: string | null; reference_genre: string | null;
   octave: { lo: number; hi: number; version_db: number; reference_db: number; delta_db: number }[];
   third_octave_delta: BandDev[];
   /** a = reference, b = version. */
@@ -104,14 +107,33 @@ export interface SectionAnalysis {
   octave_bands: string[];
 }
 
+export type Normalization = 'up_and_down' | 'down_only';
+export interface Platform {
+  id: string; name: string; target_lufs: number; normalization: Normalization; boost_ceiling_dbtp: number | null;
+  ceiling_dbtp: number; loud_ceiling_dbtp: number | null; modes: { name: string; target_lufs: number; limiter: boolean }[];
+  codecs: string[]; hires: boolean; confidence: 'documented' | 'reported'; note: string;
+}
+export interface Playback {
+  target_lufs: number; wanted_gain_db: number; gain_db: number; playback_lufs: number;
+  quieter_by_db: number; limiter_db: number; capped_by_peaks: boolean;
+}
+export interface PlatformResult {
+  id: string; name: string; confidence: 'documented' | 'reported'; note: string; normalization: Normalization; hires: boolean;
+  ceiling_dbtp: number; playback: Playback; modes: { name: string; playback: Playback }[];
+  encoded_peak_dbtp: number | null; peak_after_dbtp: number; summary: string; checks: Finding[]; status: Severity;
+}
+export interface StreamingReport { kind: Kind; encoded: boolean; general: Finding[]; platforms: PlatformResult[] }
+
 export interface CodecResult { codec: string; label: string; true_peak_dbtp: number | null; integrated_lufs: number | null; error: string | null }
 
 export interface Settings {
   provider: Provider; anthropic_model: string; openai_model: string; ollama_model: string;
-  ollama_url: string; ffmpeg_path: string; target_lufs: number; max_tool_rounds: number;
+  ollama_url: string; ffmpeg_path: string; main_platform: string; target_lufs: number; max_tool_rounds: number;
 }
 export interface SettingsView extends Settings {
   has_anthropic_key: boolean; has_openai_key: boolean; ffmpeg_found: boolean; keyring_ok: boolean;
+  /** The main platform's loudness target, or the custom one. */
+  effective_target_lufs: number;
 }
 
 export interface ChatMessage { id: number; role: 'user' | 'assistant'; content: string; created_at: string }
@@ -138,12 +160,15 @@ export const api = {
   listVersions: (projectId: number) => call<VersionSummary[]>('list_versions', { projectId }),
   addVersion: (projectId: number, path: string, kind?: Kind) => call<VersionSummary>('add_version', { projectId, path, kind: kind ?? null, label: null }),
   updateVersion: (id: number, label: string, kind: Kind) => call<VersionSummary>('update_version', { id, label, kind }),
+  updateVersionContext: (id: number, genre: string | null, key: MusicalKey | null) => call<VersionSummary>('update_version_context', { id, genre, key }),
   deleteVersion: (id: number) => call<void>('delete_version', { id }),
   getReport: (id: number) => call<ReportEnvelope>('get_report', { id }),
   compare: (a: number, b: number) => call<Comparison>('compare_versions', { a, b }),
   compareReference: (a: number, b: number) => call<ReferenceComparison>('compare_reference', { a, b }),
   section: (id: number, startS: number, endS: number) => call<SectionAnalysis>('section_analysis', { id, startS, endS }),
   codecCheck: (id: number) => call<CodecResult[]>('codec_check', { id }),
+  listPlatforms: () => call<Platform[]>('list_platforms'),
+  streamingReport: (id: number) => call<StreamingReport>('streaming_report', { id }),
   getSettings: () => call<SettingsView>('get_settings'),
   saveSettings: (settings: Settings) => call<SettingsView>('save_settings', { settings }),
   setApiKey: (provider: Provider, key: string) => call<SettingsView>('set_api_key', { provider, key }),

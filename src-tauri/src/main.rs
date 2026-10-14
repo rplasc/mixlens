@@ -9,8 +9,8 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use state::{AudioCache, Inner};
-use std::sync::{Arc, Mutex};
+use state::Inner;
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
 
@@ -25,7 +25,7 @@ fn main() {
                 .timeout(Duration::from_secs(180))
                 .user_agent(concat!("MixLens/", env!("CARGO_PKG_VERSION")))
                 .build()?;
-            app.manage(Arc::new(Inner { db: Mutex::new(conn), cache: Mutex::new(AudioCache::new(2)), http }));
+            app.manage(Arc::new(Inner::new(conn, http)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -38,12 +38,15 @@ fn main() {
             commands::list_versions,
             commands::add_version,
             commands::update_version,
+            commands::update_version_context,
             commands::delete_version,
             commands::get_report,
             commands::compare_versions,
             commands::compare_reference,
             commands::section_analysis,
             commands::codec_check,
+            commands::list_platforms,
+            commands::streaming_report,
             commands::get_settings,
             commands::save_settings,
             commands::set_api_key,

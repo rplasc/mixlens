@@ -2,6 +2,7 @@
 //! AI mode builds on them rather than replacing them.
 
 use crate::key::Role;
+use crate::streaming::Normalization;
 use crate::report::*;
 
 fn f(sev: Severity, code: &str, title: impl Into<String>, detail: impl Into<String>) -> Finding {
@@ -103,7 +104,46 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             }
             let diff = l.integrated_lufs - t.target_lufs;
             let headroom_to_boost = t.ceiling_dbtp - l.true_peak_dbtp;
-            if diff < -1.0 {
+            if let Some(p) = &t.platform {
+                // Platform-specific wording, including platforms that never turn tracks up.
+                let pb = p.playback(r);
+                let name = &p.name;
+                if diff < -1.0 {
+                    let (sev, detail) = match p.normalization {
+                        Normalization::DownOnly => (
+                            Severity::Warn,
+                            format!(
+                                "{:.1} LUFS vs {name}'s {:.0} LUFS. {name} doesn't turn quiet tracks up, so it plays {:.1} dB quieter than other tracks.",
+                                l.integrated_lufs, t.target_lufs, pb.quieter_by_db
+                            ),
+                        ),
+                        Normalization::UpAndDown if pb.quieter_by_db >= 0.5 => (
+                            Severity::Warn,
+                            format!(
+                                "{:.1} LUFS vs {name}'s {:.0} LUFS. {name} raises it only {:.1} dB (limited by peak headroom), so it plays {:.1} dB quieter than other tracks.",
+                                l.integrated_lufs, t.target_lufs, pb.gain_db, pb.quieter_by_db
+                            ),
+                        ),
+                        Normalization::UpAndDown => (
+                            Severity::Info,
+                            format!(
+                                "{:.1} LUFS vs {name}'s {:.0} LUFS. {name} turns it up {:.1} dB; there's enough peak headroom to reach the target.",
+                                l.integrated_lufs, t.target_lufs, pb.gain_db
+                            ),
+                        ),
+                    };
+                    out.push(f(sev, "loudness_low", format!("Quieter than {name}'s target"), detail));
+                } else if diff > 2.0 {
+                    out.push(f(
+                        Severity::Info,
+                        "loudness_high",
+                        format!("Louder than {name}'s target"),
+                        format!("{:.1} LUFS will be turned down {:.1} dB on {name}. Extra limiting buys nothing there.", l.integrated_lufs, -pb.gain_db),
+                    ));
+                } else {
+                    out.push(f(Severity::Ok, "loudness", "Loudness on target", format!("{:.1} LUFS ({name} target {:.0}).", l.integrated_lufs, t.target_lufs)));
+                }
+            } else if diff < -1.0 {
                 let boost = (-diff).min(headroom_to_boost.max(0.0));
                 out.push(f(
                     Severity::Warn,

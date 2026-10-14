@@ -3,6 +3,7 @@
 use crate::audio::FileInfo;
 use crate::genre::{GenreMatch, GenrePreset};
 use crate::key::{KeyAnalysis, MusicalKey};
+use crate::streaming::Platform;
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -34,11 +35,14 @@ pub struct Targets {
     /// The song's key, if set: labels tonal peaks and estimates tuning.
     #[serde(default)]
     pub key: Option<MusicalKey>,
+    /// Main streaming platform, if one was chosen; `target_lufs` and the ceilings come from it.
+    #[serde(default)]
+    pub platform: Option<Platform>,
 }
 
 impl Default for Targets {
     fn default() -> Self {
-        Self { kind: Kind::Mix, target_lufs: -14.0, ceiling_dbtp: -1.0, loud_ceiling_dbtp: -2.0, genre: None, key: None }
+        Self { kind: Kind::Mix, target_lufs: -14.0, ceiling_dbtp: -1.0, loud_ceiling_dbtp: -2.0, genre: None, key: None, platform: None }
     }
 }
 

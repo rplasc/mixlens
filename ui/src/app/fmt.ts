@@ -36,3 +36,9 @@ export function format(sampleFormat: string, rate: number): string {
   const kind = sampleFormat.startsWith('float') ? `${depth}-bit float` : sampleFormat.startsWith('int') ? `${depth}-bit` : sampleFormat;
   return `${(rate / 1000).toFixed(rate % 1000 ? 1 : 0)} kHz, ${kind}`;
 }
+
+export const TONICS = ['C', 'C♯/D♭', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+
+export function keyName(k: { tonic: number; mode: 'major' | 'minor' } | null | undefined): string {
+  return k ? `${TONICS[k.tonic]} ${k.mode}` : '';
+}

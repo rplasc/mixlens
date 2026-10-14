@@ -2,17 +2,18 @@ import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { Kind, MusicalKey } from './api';
 import { Assistant } from './assistant';
 import { Compare } from './compare';
-import { format, time } from './fmt';
+import { format, keyName, time, TONICS } from './fmt';
 import { Overview } from './overview';
 import { Settings } from './settings';
 import { Sidebar } from './sidebar';
 import { Spectrum } from './spectrum';
 import { Stereo } from './stereo';
+import { Streaming } from './streaming';
 import { Store, Tab } from './store';
 
 @Component({
   selector: 'app-root',
-  imports: [Sidebar, Overview, Spectrum, Stereo, Compare, Assistant, Settings],
+  imports: [Sidebar, Overview, Spectrum, Stereo, Streaming, Compare, Assistant, Settings],
   template: `
     <div class="shell" [class.chat-closed]="!store.chatOpen()">
       <aside class="side"><ml-sidebar /></aside>
@@ -23,18 +24,19 @@ import { Store, Tab } from './store';
             <div class="title">
               <div class="songbar">
                 <p class="song">{{ store.project()?.name }}</p>
+                @if (store.context().reference) { <span class="ctx-scope" title="A reference is another song, so it has its own genre and key">This reference</span> }
                 <label class="ctx">
                   <span>Genre</span>
-                  <select (change)="setGenre($any($event.target).value)" aria-label="Song genre">
-                    <option value="" [selected]="!store.project()?.genre">Not set</option>
+                  <select (change)="setGenre($any($event.target).value)" [attr.aria-label]="scope() + ' genre'">
+                    <option value="" [selected]="!store.context().genre">Not set</option>
                     @for (g of store.presets(); track g.id) {
-                      <option [value]="g.id" [selected]="g.id === store.project()?.genre">{{ g.name }}</option>
+                      <option [value]="g.id" [selected]="g.id === store.context().genre">{{ g.name }}</option>
                     }
                   </select>
                 </label>
                 <label class="ctx">
                   <span>Key</span>
-                  <select (change)="setTonic($any($event.target).value)" aria-label="Song key">
+                  <select (change)="setTonic($any($event.target).value)" [attr.aria-label]="scope() + ' key'">
                     <option value="" [selected]="!key()">Not set</option>
                     @for (n of tonics; track $index) {
                       <option [value]="$index" [selected]="key()?.tonic === $index">{{ n }}</option>
@@ -45,6 +47,7 @@ import { Store, Tab } from './store';
                     <option value="minor" [selected]="key()?.mode === 'minor'">minor</option>
                   </select>
                 </label>
+                @if (store.context().reference) { <span class="ctx-song">Song: {{ songContext() }}</span> }
               </div>
               @if (editing()) {
                 <form (submit)="saveLabel($event, labelBox.value)">
@@ -83,6 +86,7 @@ import { Store, Tab } from './store';
               @case ('overview') { <ml-overview /> }
               @case ('spectrum') { <ml-spectrum /> }
               @case ('stereo') { <ml-stereo /> }
+              @case ('streaming') { <ml-streaming /> }
               @case ('compare') { <ml-compare /> }
             }
           </div>
@@ -127,6 +131,8 @@ import { Store, Tab } from './store';
     .song { color: var(--muted); font-size: 13px; }
     .ctx { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--faint); }
     .ctx select { font-size: 12px; padding: 1px 4px; }
+    .ctx-scope { font-size: 11px; color: var(--b); border: 1px solid var(--b); border-radius: 3px; padding: 0 5px; }
+    .ctx-song { font-size: 12px; color: var(--faint); }
     .title h1 { font-size: 26px; cursor: text; }
     .title input { font-size: 22px; font-family: var(--font-display); width: 360px; }
     .file { color: var(--faint); font-size: 12px; margin-top: 2px; }
@@ -159,24 +165,31 @@ export class App implements OnInit {
     { id: 'overview', label: 'Overview' },
     { id: 'spectrum', label: 'Tone' },
     { id: 'stereo', label: 'Stereo' },
+    { id: 'streaming', label: 'Streaming' },
     { id: 'compare', label: 'Compare versions' },
   ];
 
-  readonly tonics = ['C', 'C♯/D♭', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
-  readonly key = computed(() => this.store.project()?.key ?? null);
+  readonly tonics = TONICS;
+  readonly key = computed(() => this.store.context().key);
+  readonly scope = computed(() => (this.store.context().reference ? 'Reference' : 'Song'));
+  readonly songContext = computed(() => {
+    const p = this.store.project();
+    const genre = this.store.presets().find((g) => g.id === p?.genre)?.name;
+    return [genre ?? 'no genre', p?.key ? keyName(p.key) : 'no key'].join(', ');
+  });
 
   setGenre(id: string) {
-    void this.store.setSongContext(id || null, this.key());
+    void this.store.setContext(id || null, this.key());
   }
 
   setTonic(v: string) {
     const key: MusicalKey | null = v === '' ? null : { tonic: +v, mode: this.key()?.mode ?? 'major' };
-    void this.store.setSongContext(this.store.project()?.genre ?? null, key);
+    void this.store.setContext(this.store.context().genre, key);
   }
 
   setMode(mode: string) {
     const k = this.key();
-    if (k) void this.store.setSongContext(this.store.project()?.genre ?? null, { ...k, mode: mode === 'minor' ? 'minor' : 'major' });
+    if (k) void this.store.setContext(this.store.context().genre, { ...k, mode: mode === 'minor' ? 'minor' : 'major' });
   }
 
   readonly fmtFormat = computed(() => {

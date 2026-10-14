@@ -30,7 +30,12 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "codec_check",
-            description: "Encode a version to Ogg Vorbis (q5, q9) and AAC (256k, 128k) with ffmpeg and measure decoded true peak and loudness. Use before approving a master for streaming. Takes ~10-20 s.",
+            description: "Encode a version to Ogg Vorbis (q5, q9), AAC (256k, 128k), Opus 128k and MP3 320k with ffmpeg and measure decoded true peak and loudness. Use before approving a master for streaming; streaming_check then uses these peaks. Takes ~10-20 s.",
+            schema: json!({"type": "object", "properties": {"version_id": {"type": "integer"}}, "required": ["version_id"]}),
+        },
+        ToolDef {
+            name: "streaming_check",
+            description: "Per-platform streaming breakdown (Spotify incl. Loud/Quiet modes, Apple Music, YouTube, Amazon Music, Tidal, Deezer): how much each turns the track up or down, the resulting playback loudness and shortfall, true-peak ceilings, peaks after gain and encoding, plus clipping and delivery-format checks. Run codec_check first for post-encode peaks.",
             schema: json!({"type": "object", "properties": {"version_id": {"type": "integer"}}, "required": ["version_id"]}),
         },
     ]
@@ -95,7 +100,14 @@ pub fn execute(inner: &Inner, name: &str, args: &Value) -> Result<Value, String>
             if !Path::new(&v.path).exists() {
                 return Err(format!("{} not found on disk", v.path));
             }
-            Ok(json!(codec::codec_check(Path::new(&v.path), &ff)))
+            let results = codec::codec_check(Path::new(&v.path), &ff);
+            inner.codec_results.lock().unwrap().insert(v.id, results.clone());
+            Ok(json!(results))
+        }
+        "streaming_check" => {
+            let mut out = inner.streaming(id(args, "version_id")?)?.to_ai_json();
+            out["main_platform"] = json!(inner.settings().main_platform);
+            Ok(out)
         }
         other => Err(format!("unknown tool {other}")),
     }

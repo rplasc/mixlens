@@ -33,6 +33,9 @@ pub struct Settings {
     pub ollama_model: String,
     pub ollama_url: String,
     pub ffmpeg_path: String,
+    /// Platform whose target and ceilings drive the master rules, or "custom" to use `target_lufs`.
+    pub main_platform: String,
+    /// Loudness target used when `main_platform` is "custom".
     pub target_lufs: f64,
     pub max_tool_rounds: u32,
 }
@@ -46,6 +49,7 @@ impl Default for Settings {
             ollama_model: String::new(),
             ollama_url: "http://localhost:11434".into(),
             ffmpeg_path: String::new(),
+            main_platform: "spotify".into(),
             target_lufs: -14.0,
             max_tool_rounds: 8,
         }
@@ -71,6 +75,8 @@ pub struct SettingsView {
     pub has_openai_key: bool,
     pub ffmpeg_found: bool,
     pub keyring_ok: bool,
+    /// The main platform's target, or the custom one.
+    pub effective_target_lufs: f64,
 }
 
 fn entry(p: Provider) -> Result<keyring::Entry, String> {
