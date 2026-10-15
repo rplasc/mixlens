@@ -52,7 +52,8 @@ export class Store {
   readonly comparing = signal(false);
 
   readonly codec = signal<CodecResult[] | null>(null);
-  readonly codecBusy = signal(false);
+  private readonly codecRunning = signal<ReadonlySet<number>>(new Set());
+  readonly codecBusy = computed(() => this.codecRunning().has(this.versionId() ?? NaN));
   readonly streaming = signal<StreamingReport | null>(null);
   readonly platforms = signal<Platform[]>([]);
   readonly section = signal<SectionAnalysis | null>(null);
@@ -92,9 +93,12 @@ export class Store {
   readonly project = computed(() => this.projects().find((p) => p.id === this.projectId()) ?? null);
   readonly version = computed(() => this.versions().find((v) => v.id === this.versionId()) ?? null);
   readonly otherVersions = computed(() => this.versions().filter((v) => v.id !== this.versionId()));
-  readonly mixVersions = computed(() => this.versions().filter((v) => v.kind !== 'reference'));
+  readonly bounces = computed(() => this.versions().filter((v) => v.kind !== 'reference'));
   readonly references = computed(() => this.versions().filter((v) => v.kind === 'reference'));
-  readonly genre = computed(() => this.presets().find((g) => g.id === this.project()?.genre) ?? null);
+  /** The platform chosen in Settings; null for a custom target. */
+  readonly mainPlatform = computed(() => this.platforms().find((p) => p.id === this.settings()?.main_platform) ?? null);
+  /** Loudness target masters are checked against: the main platform's, or the custom one. */
+  readonly target = computed(() => this.settings()?.effective_target_lufs ?? -14);
   /** Genre and key the header edits: a reference's own, otherwise the song's. */
   readonly context = computed(() => {
     const v = this.version();
@@ -292,6 +296,7 @@ export class Store {
     this.comparing.set(false);
     this.comparison.set(null);
     this.refComparison.set(null);
+    this.compareReport.set(null);
     this.codec.set(null);
     this.streaming.set(null);
     this.section.set(null);
@@ -474,8 +479,8 @@ export class Store {
 
   async runCodec() {
     const id = this.versionId();
-    if (id == null) return;
-    this.codecBusy.set(true);
+    if (id == null || this.codecRunning().has(id)) return;
+    this.codecRunning.update((s) => new Set(s).add(id));
     try {
       const codec = await api.codecCheck(id);
       if (this.versionId() !== id) return;
@@ -484,7 +489,11 @@ export class Store {
     } catch (e) {
       this.fail(e);
     } finally {
-      this.codecBusy.set(false);
+      this.codecRunning.update((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
     }
   }
 

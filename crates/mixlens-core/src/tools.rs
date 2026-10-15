@@ -1,6 +1,6 @@
 //! On-demand measurements over a time range (used by the UI and by AI tool calls).
 
-use crate::analyze::{octave_shares, range_loudness, third_octave};
+use crate::analyze::{octave_levels, octave_shares, range_loudness, third_octave};
 use crate::audio::Audio;
 use crate::dsp;
 use crate::report::{BandDev, OctaveShare, Report};
@@ -40,9 +40,5 @@ pub fn band_energy(a: &Audio, t0: f64, t1: f64) -> BandEnergy {
     let x = &mid[s..e];
     let (f, p) = dsp::welch(x, fs, 16384);
     let (tilt, third) = third_octave(&f, &p, fs);
-    let octave_level_db = crate::analyze::OCTAVE_BANDS
-        .iter()
-        .map(|&(lo, hi)| dsp::pow_db(f.iter().zip(&p).filter(|(&fr, _)| fr >= lo && fr < hi).map(|(_, &v)| v).sum::<f64>()))
-        .collect();
-    BandEnergy { start_s: t0, end_s: t1, octave_level_db, octave_share: octave_shares(&f, &p), tilt_db_per_oct: tilt, third_octave: third }
+    BandEnergy { start_s: t0, end_s: t1, octave_level_db: octave_levels(&f, &p), octave_share: octave_shares(&f, &p), tilt_db_per_oct: tilt, third_octave: third }
 }

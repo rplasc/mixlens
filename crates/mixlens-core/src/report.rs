@@ -246,12 +246,20 @@ pub struct Section {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Dither {
     pub bits: u32,
+    /// 0 when there was too little quiet audio to judge (the other fields are then empty too).
     pub samples_checked: u64,
     pub distinct_codes: u32,
     pub nonzero_fraction: f64,
     pub level_dbfs: f64,
     pub detected: bool,
     pub note: String,
+}
+
+impl Dither {
+    /// A 16-bit (or lower) file whose quiet passages are pure digital zero.
+    pub fn missing(&self) -> bool {
+        self.bits <= 16 && self.samples_checked > 0 && !self.detected && self.nonzero_fraction < 0.01
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -269,6 +277,12 @@ pub struct Finding {
     pub code: String,
     pub title: String,
     pub detail: String,
+}
+
+impl Finding {
+    pub fn new(severity: Severity, code: &str, title: impl Into<String>, detail: impl Into<String>) -> Self {
+        Finding { severity, code: code.into(), title: title.into(), detail: detail.into() }
+    }
 }
 
 impl Report {

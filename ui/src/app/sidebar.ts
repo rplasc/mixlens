@@ -60,7 +60,7 @@ import { Store } from './store';
           <button class="ghost small" (click)="store.pickFiles()">Add files</button>
         </div>
         <ul>
-          @for (v of store.mixVersions(); track v.id) {
+          @for (v of store.bounces(); track v.id) {
             <li class="vrow">
               <button class="item version" [class.on]="v.id === store.versionId()" (click)="selectVersion(v.id)">
                 <ml-sev class="status" [sev]="v.worst" [announce]="false" [attr.title]="issues(v)" />
@@ -77,7 +77,7 @@ import { Store } from './store';
             <li class="analyzing"><span class="spin"></span>Analyzing {{ a }}</li>
           }
         </ul>
-        @if (!store.mixVersions().length && !store.analyzing().length) {
+        @if (!store.bounces().length && !store.analyzing().length) {
           <p class="muted empty">Add a bounce of this song to analyze it. You can also drop files onto the window.</p>
         }
 
@@ -210,6 +210,7 @@ export class Sidebar {
   async create(ev: Event, name: string) {
     ev.preventDefault();
     this.creating.set(false);
-    await this.store.createProject(name);
+    // A blank name cancels, like Escape.
+    if (name.trim()) await this.store.createProject(name.trim());
   }
 }

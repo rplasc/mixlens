@@ -13,7 +13,7 @@ const READING_CODES: Record<string, string[]> = {
   'True peak': ['tp_ceiling', 'mix_headroom', 'clipping', 'over_full_scale'],
   PLR: ['mix_overcompressed'],
   'Mono fold': ['mono'],
-  'Low-end corr.': ['low_end_width'],
+  Correlation: ['low_end_width'],
 };
 
 /** Findings whose problem can be shown on the loudness timeline, and the marker kind that locates it. */
@@ -246,8 +246,9 @@ export class Overview implements OnDestroy {
     const d = this.notesDraft;
     this.notesDraft = null;
     if (!d) return;
-    const saved = this.store.versions().find((v) => v.id === d.id)?.notes ?? '';
-    if (d.text.trim() === saved) return;
+    // Skip only a draft known to match; a version missing from the list (another song open) is saved.
+    const saved = this.store.versions().find((v) => v.id === d.id)?.notes;
+    if (saved !== undefined && d.text.trim() === saved) return;
     const ok = await this.store.saveNotes(d.id, d.text);
     if (ok && this.store.versionId() === d.id && !this.notesDraft) this.notesSaved.set(true);
   }
@@ -294,8 +295,8 @@ export class Overview implements OnDestroy {
       this.store.fail("Couldn't copy to the clipboard.");
     }
   }
-  readonly target = computed(() => this.store.settings()?.effective_target_lufs ?? -14);
-  readonly platformName = computed(() => this.store.platforms().find((p) => p.id === this.store.settings()?.main_platform)?.name ?? null);
+  readonly target = this.store.target;
+  readonly platformName = computed(() => this.store.mainPlatform()?.name ?? null);
   /** "Spotify target −14", or "Target −16" for a custom target. */
   readonly targetNote = computed(() => {
     const name = this.platformName();
@@ -370,7 +371,7 @@ export class Overview implements OnDestroy {
       { label: 'Loudness range', value: num(l.lra_lu), unit: 'LU' },
       { label: 'PLR', value: num(l.plr_db), unit: 'dB', note: 'peak to loudness', severity: this.sevFor('PLR', f) },
       { label: 'Mono fold', value: signed(s.mono_loss_lu, 2), unit: 'LU', severity: this.sevFor('Mono fold', f) },
-      { label: 'Correlation', value: num(s.correlation, 2), note: `${num(s.low_correlation, 2)} below 120 Hz`, severity: this.sevFor('Low-end corr.', f) },
+      { label: 'Correlation', value: num(s.correlation, 2), note: `${num(s.low_correlation, 2)} below 120 Hz`, severity: this.sevFor('Correlation', f) },
     ];
   });
 }

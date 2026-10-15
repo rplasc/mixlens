@@ -19,7 +19,7 @@ export interface ShareInput {
 }
 
 /** Rules-engine prose without the invisible word joiners, which paste badly into chat and email. */
-const plain = (s: string) => prose(s).replace(/⁠/g, '');
+const plain = (s: string) => prose(s).replace(/\u2060/g, '');
 
 /** Verdict and findings as plain text, for pasting into a chat message or an email. */
 export function findingsText(x: ShareInput): string {

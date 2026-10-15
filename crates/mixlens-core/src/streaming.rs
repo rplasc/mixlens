@@ -286,23 +286,19 @@ pub struct StreamingReport {
     pub platforms: Vec<PlatformResult>,
 }
 
-fn f(sev: Severity, code: &str, title: impl Into<String>, detail: impl Into<String>) -> Finding {
-    Finding { severity: sev, code: code.into(), title: title.into(), detail: detail.into() }
-}
-
 fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Finding> {
     let l = &r.loudness;
     let mut out = vec![];
     match kind {
-        Kind::Mix => out.push(f(Severity::Info, "mix", "This is a mix", "Mastering will change these numbers. Shown as if it were released as it is.")),
-        Kind::Reference => out.push(f(Severity::Info, "reference", "Reference track", "Shown for how it plays on each platform.")),
+        Kind::Mix => out.push(Finding::new(Severity::Info, "mix", "This is a mix", "Mastering will change these numbers. Shown as if it were released as it is.")),
+        Kind::Reference => out.push(Finding::new(Severity::Info, "reference", "Reference track", "Shown for how it plays on each platform.")),
         Kind::Master => {}
     }
 
     // ---- clipping ----
     let before = out.len();
     if l.samples_over_full_scale > 0 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Error,
             "over_full_scale",
             "Samples above 0 dBFS",
@@ -310,7 +306,7 @@ fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Findi
         ));
     }
     if l.flat_top_runs > 0 && l.sample_peak_dbfs > -0.5 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Error,
             "clipping",
             "Hard clipping",
@@ -318,7 +314,7 @@ fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Findi
         ));
     }
     if l.true_peak_dbtp > 0.0 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "intersample",
             "Peaks between samples go over 0 dBTP",
@@ -331,7 +327,7 @@ fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Findi
             .filter_map(|c| c.true_peak_dbtp.filter(|&p| p > 0.0).map(|p| format!("{} {:+.1} dBTP", c.label, p)))
             .collect();
         if !over.is_empty() {
-            out.push(f(
+            out.push(Finding::new(
                 Severity::Error,
                 "encode_clipping",
                 "Clips after lossy encoding",
@@ -344,14 +340,14 @@ fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Findi
     }
     if out.len() == before {
         if l.samples_near_full_scale > 0 {
-            out.push(f(
+            out.push(Finding::new(
                 Severity::Info,
                 "near_full_scale",
                 "Peaks touch full scale",
                 format!("{} samples at or above -0.1 dBFS. Not clipping, but there's no margin left for encoding.", l.samples_near_full_scale),
             ));
         } else {
-            out.push(f(
+            out.push(Finding::new(
                 Severity::Ok,
                 "no_clipping",
                 "No clipping",
@@ -361,14 +357,14 @@ fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Findi
     }
 
     // ---- delivery format ----
-    let ext = r.file.file_name.rsplit('.').next().unwrap_or("").to_lowercase();
-    let lossy = ["mp3", "m4a", "aac", "ogg", "opus"].contains(&ext.as_str());
+    // Only lossy codecs decode without a bit depth; the extension can't tell AAC from ALAC in .m4a.
+    let lossy = r.file.sample_format == "compressed";
     let float = r.file.sample_format.starts_with("float");
     let sr = r.file.sample_rate;
     let khz = |sr: u32| format!("{} kHz", sr as f64 / 1000.0);
     let before = out.len();
     if lossy {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "lossy_source",
             "Lossy source file",
@@ -376,19 +372,17 @@ fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Findi
         ));
     }
     if sr < 44100 {
-        out.push(f(Severity::Warn, "sample_rate", "Sample rate below 44.1 kHz", format!("{} is below what distributors accept; export at 44.1 kHz or higher.", khz(sr))));
+        out.push(Finding::new(Severity::Warn, "sample_rate", "Sample rate below 44.1 kHz", format!("{} is below what distributors accept; export at 44.1 kHz or higher.", khz(sr))));
     }
     if float && !lossy {
-        out.push(f(Severity::Info, "float", "Floating-point file", "Most distributors want 16- or 24-bit integer WAV or FLAC. Export a 24-bit copy."));
+        out.push(Finding::new(Severity::Info, "float", "Floating-point file", "Most distributors want 16- or 24-bit integer WAV or FLAC. Export a 24-bit copy."));
     }
-    if let Some(d) = &r.dither {
-        if d.bits <= 16 && d.samples_checked > 0 && !d.detected && d.nonzero_fraction < 0.01 {
-            out.push(f(Severity::Info, "dither", "No dither visible", d.note.clone()));
-        }
+    if let Some(d) = r.dither.as_ref().filter(|d| d.missing()) {
+        out.push(Finding::new(Severity::Info, "dither", "No dither visible", d.note.clone()));
     }
     let bits = r.file.bits_per_sample.unwrap_or(0);
     if !lossy && !float && bits >= 24 && sr > 44100 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Info,
             "hires",
             "Eligible for hi-res tiers",
@@ -396,7 +390,7 @@ fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Findi
         ));
     }
     if out.len() == before || (out.len() == before + 1 && out[before].code == "hires") {
-        out.insert(before, f(Severity::Ok, "format", "Delivery format", format!("{bits}-bit at {} meets distributor requirements.", khz(sr))));
+        out.insert(before, Finding::new(Severity::Ok, "format", "Delivery format", format!("{bits}-bit at {} meets distributor requirements.", khz(sr))));
     }
     out
 }
@@ -413,7 +407,7 @@ pub fn assess(r: &Report, kind: Kind, platforms: &[Platform], encoded: Option<&[
             let mut checks = vec![];
 
             if tp > ceiling + 0.05 {
-                checks.push(f(
+                checks.push(Finding::new(
                     Severity::Warn,
                     "tp_ceiling",
                     format!("True peak above {}'s ceiling", p.name),
@@ -425,7 +419,7 @@ pub fn assess(r: &Report, kind: Kind, platforms: &[Platform], encoded: Option<&[
                     ),
                 ));
             } else {
-                checks.push(f(Severity::Ok, "tp_ceiling", "True peak within the ceiling", format!("{:.1} dBTP vs {:.0} dBTP.", tp, ceiling)));
+                checks.push(Finding::new(Severity::Ok, "tp_ceiling", "True peak within the ceiling", format!("{:.1} dBTP vs {:.0} dBTP.", tp, ceiling)));
             }
 
             // Peak listeners get: worst encode of this platform's streams, plus the applied gain.
@@ -433,7 +427,7 @@ pub fn assess(r: &Report, kind: Kind, platforms: &[Platform], encoded: Option<&[
                 e.iter()
                     .filter(|c| p.codecs.contains(&c.codec))
                     .filter_map(|c| c.true_peak_dbtp.map(|v| (v, c.label.clone())))
-                    .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
             });
             let (src, label) = match &encoded_peak {
                 Some((v, label)) => (*v, format!("encoding to {label}")),
@@ -442,21 +436,21 @@ pub fn assess(r: &Report, kind: Kind, platforms: &[Platform], encoded: Option<&[
             let after = src + pb.gain_db;
             let gain_note = if pb.gain_db.abs() >= 0.05 { format!(" and {:+.1} dB of gain", pb.gain_db) } else { String::new() };
             if after > 0.0 {
-                checks.push(f(
+                checks.push(Finding::new(
                     Severity::Error,
                     "playback_clip",
                     format!("Clips on {}", p.name),
                     format!("Peaks reach {:+.1} dBTP after {label}{gain_note}: listeners hear clipping.", after),
                 ));
             } else if after > -0.5 {
-                checks.push(f(
+                checks.push(Finding::new(
                     Severity::Warn,
                     "playback_peak",
                     format!("Little peak margin on {}", p.name),
                     format!("Peaks reach {:.1} dBTP after {label}{gain_note}.", after),
                 ));
             } else if encoded_peak.is_some() {
-                checks.push(f(
+                checks.push(Finding::new(
                     Severity::Ok,
                     "playback_peak",
                     "Encoded peaks stay clear",
@@ -474,7 +468,7 @@ pub fn assess(r: &Report, kind: Kind, platforms: &[Platform], encoded: Option<&[
                 .collect();
             for m in &modes {
                 if m.playback.limiter_db > 0.5 {
-                    checks.push(f(
+                    checks.push(Finding::new(
                         Severity::Info,
                         "mode_limiter",
                         format!("{} {} mode limits peaks", p.name, m.name),

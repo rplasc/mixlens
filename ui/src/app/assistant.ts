@@ -11,7 +11,7 @@ marked.setOptions({ gfm: true, breaks: false });
     <header>
       <h2>Assistant</h2>
       @if (!needsSetup()) {
-        <button class="ghost model" (click)="store.showSettings.set(true)" [title]="'Change in Settings'">{{ modelLabel() }}</button>
+        <button class="ghost model" (click)="store.showSettings.set(true)" title="Change in Settings">{{ modelLabel() }}</button>
       }
       @if (store.chat().length) {
         <button class="ghost" (click)="store.clearChat()" [disabled]="store.chatBusy()">Clear</button>
@@ -118,7 +118,7 @@ export class Assistant implements AfterViewChecked {
     const v = this.store.version();
     const many = this.store.versions().length > 1;
     const out = [];
-    if (v?.kind === 'master') out.push('Is this master ready for Spotify and Apple Music?');
+    if (v?.kind === 'master') out.push(`Is this master ready for ${this.store.mainPlatform()?.name ?? 'streaming'}?`);
     else out.push('Is this mix ready to be mastered?');
     if (many) out.push('What changed since the previous version?');
     out.push('What should I fix first?');

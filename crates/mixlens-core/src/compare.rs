@@ -1,6 +1,6 @@
 //! Version-to-version comparison: alignment, null test, and per-section deltas.
 
-use crate::analyze::{octave_shares, range_loudness, OCTAVE_BANDS};
+use crate::analyze::{octave_levels, range_loudness, st_time, OCTAVE_BANDS};
 use crate::audio::{from_planar, Audio};
 use crate::dsp::{self, pow_db};
 use crate::report::{BandDev, Report, SectionKind};
@@ -41,7 +41,7 @@ pub struct ChangedRegion {
     pub mean_diff_rel_db: f64,
     pub lufs_a: f64,
     pub lufs_b: f64,
-    /// b minus a energy per octave band (dB), bands as in `octave_bands`.
+    /// b minus a energy per octave band (dB), bands as in `analyze::OCTAVE_BANDS`.
     pub octave_delta_db: Vec<f64>,
 }
 
@@ -159,10 +159,7 @@ fn region_octaves(x: &[f32], fs: f64) -> Vec<f64> {
         return vec![f64::NAN; OCTAVE_BANDS.len()];
     }
     let (f, p) = dsp::welch(x, fs, 16384);
-    OCTAVE_BANDS
-        .iter()
-        .map(|&(lo, hi)| pow_db(f.iter().zip(&p).filter(|(&fr, _)| fr >= lo && fr < hi).map(|(_, &v)| v).sum::<f64>()))
-        .collect()
+    octave_levels(&f, &p)
 }
 
 pub fn compare(a: &Audio, ra: &Report, b_in: &Audio, rb: &Report) -> Result<Comparison> {
@@ -172,15 +169,14 @@ pub fn compare(a: &Audio, ra: &Report, b_in: &Audio, rb: &Report) -> Result<Comp
     let am = a.mid();
     let bm = b.mid();
 
-    // Align on the loudest 10 s of a.
-    let hop = ra.loudness.short_term_hop_s;
+    // Align on a 10 s segment centred on a's loudest short-term window.
     let loudest = ra
         .loudness
         .short_term
         .iter()
         .enumerate()
-        .max_by(|x, y| x.1.partial_cmp(y.1).unwrap())
-        .map(|(i, _)| ((i + 1) as f64 * hop - 1.5).max(0.0))
+        .max_by(|x, y| x.1.total_cmp(y.1))
+        .map(|(i, _)| st_time(i))
         .unwrap_or(0.0);
     let lag = find_lag(&am, &bm, (loudest * fs) as usize, (10.0 * fs) as usize, (2.0 * fs) as usize);
 
@@ -195,8 +191,10 @@ pub fn compare(a: &Audio, ra: &Report, b_in: &Audio, rb: &Report) -> Result<Comp
 
     // Gain match and residual over the overlap.
     let (mut sab, mut saa, mut sbb) = (0.0f64, 0.0f64, 0.0f64);
+    let mut overlap = 0usize;
     for i in 0..a.len() {
         if let Some(j) = idx_b(i) {
+            overlap += 1;
             for (x, y) in [(a.left[i], b.left[j]), (a.right[i], b.right[j])] {
                 sab += x as f64 * y as f64;
                 saa += x as f64 * x as f64;
@@ -207,7 +205,7 @@ pub fn compare(a: &Audio, ra: &Report, b_in: &Audio, rb: &Report) -> Result<Comp
     let g = if saa > 0.0 { sab / saa } else { 1.0 };
     // ||b - g a||^2 = sbb - 2 g sab + g^2 saa
     let res = (sbb - 2.0 * g * sab + g * g * saa).max(0.0);
-    let overlap_n = (0..a.len()).filter(|&i| idx_b(i).is_some()).count().max(1) as f64 * 2.0;
+    let overlap_n = overlap.max(1) as f64 * 2.0;
     let residual_rel_db = pow_db(res) - pow_db(saa);
     let residual_dbfs = pow_db(res / overlap_n);
 
@@ -307,9 +305,6 @@ pub fn compare(a: &Audio, ra: &Report, b_in: &Audio, rb: &Report) -> Result<Comp
         .iter()
         .filter_map(|x| rb.spectrum.third_octave.iter().find(|y| (y.fc - x.fc).abs() < 0.5).map(|y| BandDelta { fc: x.fc, dev_a: x.dev_db, dev_b: y.dev_db }))
         .collect();
-
-    // Keep `octave_shares` linked for callers wanting whole-song shares.
-    let _ = octave_shares;
 
     Ok(Comparison {
         a_file: a.info.file_name.clone(),

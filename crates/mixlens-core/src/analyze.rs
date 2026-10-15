@@ -26,7 +26,7 @@ pub fn analyze(audio: &Audio, targets: &Targets) -> Result<Report> {
     );
     let ebu = ebu?;
     let mono = mono?;
-    let (edges, levels, dither, frames) = edges_etc;
+    let (edges, levels, dither) = edges_etc;
     let mut stereo = stereo;
     stereo.mono_fold_lufs = mono;
     stereo.mono_loss_lu = mono - ebu.integrated;
@@ -61,7 +61,7 @@ pub fn analyze(audio: &Audio, targets: &Targets) -> Result<Report> {
 
     let mut edges = edges;
     edges.fade_out_detected = detect_fade(&loudness.short_term, edges.last_sound_s);
-    let sections = sections(&loudness.short_term, ebu.integrated, &kblocks, audio.info.duration_s, &frames);
+    let sections = sections(&loudness.short_term, ebu.integrated, &kblocks, audio.info.duration_s);
 
     let mut report = Report {
         schema: SCHEMA_VERSION,
@@ -318,6 +318,11 @@ pub fn third_octave(f: &[f64], p: &[f64], fs: f64) -> (f64, Vec<BandDev>) {
     (slope + 3.0103, bands)
 }
 
+/// Energy per `OCTAVE_BANDS` band (dB, arbitrary but consistent reference).
+pub fn octave_levels(f: &[f64], p: &[f64]) -> Vec<f64> {
+    OCTAVE_BANDS.iter().map(|&(lo, hi)| pow_db(band_sum(f, p, lo, hi))).collect()
+}
+
 pub fn octave_shares(f: &[f64], p: &[f64]) -> Vec<OctaveShare> {
     let total = band_sum(f, p, 20.0, 20000.0);
     OCTAVE_BANDS
@@ -442,12 +447,7 @@ struct Levels {
     balance_db: f64,
 }
 
-/// 100 ms frame RMS (dBFS, louder channel), reused for silence and section logic.
-pub struct Frames {
-    pub rms_db: Vec<f64>,
-}
-
-fn edges_and_levels(a: &Audio) -> (Edges, Levels, Option<Dither>, Frames) {
+fn edges_and_levels(a: &Audio) -> (Edges, Levels, Option<Dither>) {
     let fs = a.sample_rate as f64;
     let n = a.len();
     let (l, r) = (&a.left, &a.right);
@@ -460,8 +460,8 @@ fn edges_and_levels(a: &Audio) -> (Edges, Levels, Option<Dither>, Frames) {
     let near = 10f64.powf(-0.1 / 20.0);
     let flat_thr = pk * 10f64.powf(-0.01 / 20.0);
     let (mut near_fs, mut over_fs, mut flat_runs) = (0u64, 0u64, 0u64);
-    // 100 ms blocks, matching `KBLOCK_S`, so clipping can be located later.
-    let hop = (fs * 0.1) as usize;
+    // `KBLOCK_S` blocks, sized like the true-peak blocks, so clipping can be located later.
+    let hop = (fs * KBLOCK_S).round() as usize;
     let (mut over_blocks, mut flat_blocks) = (vec![], vec![]);
     for ch in [l, r] {
         let mut run = 0u32;
@@ -527,8 +527,8 @@ fn edges_and_levels(a: &Audio) -> (Edges, Levels, Option<Dither>, Frames) {
         match (silent, run_start) {
             (true, None) => run_start = Some(i),
             (false, Some(s)) => {
-                if (i - s) as f64 * 0.1 >= 2.0 {
-                    internal.push(TimeRange { start_s: s as f64 * 0.1, end_s: i as f64 * 0.1 });
+                if (i - s) as f64 * KBLOCK_S >= 2.0 {
+                    internal.push(TimeRange { start_s: s as f64 * KBLOCK_S, end_s: i as f64 * KBLOCK_S });
                 }
                 run_start = None;
             }
@@ -560,7 +560,7 @@ fn edges_and_levels(a: &Audio) -> (Edges, Levels, Option<Dither>, Frames) {
         dc,
         balance_db: pow_db(msl) - pow_db(msr),
     };
-    (edges, levels, dither, Frames { rms_db })
+    (edges, levels, dither)
 }
 
 /// Sorted, de-duplicated block indices, capped.
@@ -636,7 +636,7 @@ fn dither_check(a: &Audio, rms_db: &[f64], hop: usize) -> Option<Dither> {
 
 // ---------- structure ----------
 
-fn st_time(i: usize) -> f64 {
+pub(crate) fn st_time(i: usize) -> f64 {
     // Short-term value i is measured at the end of a 3 s window ending at (i+1)*hop; centre it.
     ((i + 1) as f64 * ST_HOP_S - 1.5).max(0.0)
 }
@@ -652,7 +652,7 @@ fn detect_fade(st: &[f32], last_sound_s: f64) -> bool {
     reference > -45.0 && (st[end_i] as f64) < reference - 15.0
 }
 
-fn sections(st: &[f32], integrated: f64, kblocks: &[f32], duration: f64, _frames: &Frames) -> Vec<Section> {
+fn sections(st: &[f32], integrated: f64, kblocks: &[f32], duration: f64) -> Vec<Section> {
     if st.is_empty() {
         return vec![];
     }
@@ -679,7 +679,7 @@ fn sections(st: &[f32], integrated: f64, kblocks: &[f32], duration: f64, _frames
                 .unwrap()
         })
         .collect();
-    // Runs.
+    // Collapse the smoothed labels into (start, end, kind) runs.
     let mut runs: Vec<(usize, usize, SectionKind)> = vec![];
     for (i, k) in sm.into_iter().enumerate() {
         match runs.last_mut() {

@@ -44,40 +44,6 @@ export class DiffStrip {
   selector: 'ml-compare',
   imports: [FormsModule, LoudnessBridge, DiffStrip, BandChart, Trend],
   template: `
-    @if (store.otherVersions().length) {
-    @if (trendShown()) {
-      <section>
-        <div class="head">
-          <h2>All versions</h2>
-          <p class="muted">Select one to compare it with {{ store.version()?.label }}.</p>
-        </div>
-        <ml-trend />
-      </section>
-    }
-    <div class="picker" [class.split]="trendShown()">
-      <label>
-        <span class="muted">Compare</span>
-        <strong class="a">{{ store.version()?.label }}</strong>
-        <span class="muted">against</span>
-        <select [ngModel]="store.compareWith()" (ngModelChange)="store.compareWith.set(+$event)">
-          @if (bounces().length) {
-            <optgroup label="Versions">@for (v of bounces(); track v.id) { <option [ngValue]="v.id">{{ v.label }}</option> }</optgroup>
-          }
-          @if (refs().length) {
-            <optgroup label="References">@for (v of refs(); track v.id) { <option [ngValue]="v.id">{{ v.label }}</option> }</optgroup>
-          }
-        </select>
-      </label>
-      <button class="primary" (click)="store.runCompare()" [disabled]="store.comparing() || store.compareWith() === null">
-        {{ store.comparing() ? 'Comparing…' : 'Compare' }}
-      </button>
-      <p class="muted status" role="status">
-        @if (store.comparing()) { {{ store.comparingReference() ? 'Comparing with the reference…' : 'Aligning the files and running the null test…' }} }
-      </p>
-    </div>
-
-    }
-
     @if (!store.otherVersions().length) {
       <div class="first">
         <h2>Nothing to compare yet</h2>
@@ -87,7 +53,40 @@ export class DiffStrip {
           <button (click)="store.pickFiles('reference')">Add reference</button>
         </div>
       </div>
-    } @else if (store.comparing()) {
+    } @else {
+      @if (trendShown()) {
+        <section>
+          <div class="head">
+            <h2>All versions</h2>
+            <p class="muted">Select one to compare it with {{ store.version()?.label }}.</p>
+          </div>
+          <ml-trend />
+        </section>
+      }
+      <div class="picker" [class.split]="trendShown()">
+        <label>
+          <span class="muted">Compare</span>
+          <strong class="a">{{ store.version()?.label }}</strong>
+          <span class="muted">against</span>
+          <select [ngModel]="store.compareWith()" (ngModelChange)="store.compareWith.set($event)">
+            @if (otherBounces().length) {
+              <optgroup label="Versions">@for (v of otherBounces(); track v.id) { <option [ngValue]="v.id">{{ v.label }}</option> }</optgroup>
+            }
+            @if (otherRefs().length) {
+              <optgroup label="References">@for (v of otherRefs(); track v.id) { <option [ngValue]="v.id">{{ v.label }}</option> }</optgroup>
+            }
+          </select>
+        </label>
+        <button class="primary" (click)="store.runCompare()" [disabled]="store.comparing() || store.compareWith() === null">
+          {{ store.comparing() ? 'Comparing…' : 'Compare' }}
+        </button>
+        <p class="muted status" role="status">
+          @if (store.comparing()) { {{ store.comparingReference() ? 'Comparing with the reference…' : 'Aligning the files and running the null test…' }} }
+        </p>
+      </div>
+    }
+
+    @if (store.comparing()) {
       <!-- Progress is announced beside the Compare button. -->
     } @else if (rc(); as rc) {
       <p class="verdict">{{ refVerdict() }}</p>
@@ -138,11 +137,11 @@ export class DiffStrip {
       <section>
         <div class="legend">
           <span><i class="sw a"></i>{{ store.version()?.label }}</span>
-          <span><i class="sw b"></i>{{ ref()?.label }}</span>
+          <span><i class="sw b"></i>{{ partner()?.label }}</span>
         </div>
-        @if (refReport(); as rr) {
-          <ml-loudness-bridge [values]="cur()!.loudness.short_term" [compareValues]="rr.loudness.short_term"
-            [hop]="cur()!.loudness.short_term_hop_s" [sections]="cur()!.sections" [duration]="span()" />
+        @if (partnerReport(); as pr) {
+          <ml-loudness-bridge [values]="current()!.loudness.short_term" [compareValues]="pr.loudness.short_term"
+            [hop]="current()!.loudness.short_term_hop_s" [sections]="current()!.sections" [duration]="span()" />
         }
         <ml-diff-strip [windows]="c.windows" [windowS]="c.window_s" [duration]="span()" />
         <p class="faint small">Dark: identical. The brighter a stretch, the more the audio changed; faint differences are often time-varying plugins.</p>
@@ -187,7 +186,7 @@ export class DiffStrip {
       <section>
         <h2>Tonal balance</h2>
         <p class="muted small">Deviation from each version's own tilt, by third octave.</p>
-        <ml-band-chart [a]="curBands()" [b]="refBands()" [height]="200" />
+        <ml-band-chart [a]="currentBands()" [b]="partnerBands()" [height]="200" />
       </section>
 
       @if (c.changed_regions.length) {
@@ -251,10 +250,10 @@ export class Compare {
   readonly octaveLabels = computed(() => (this.c()?.octave_bands ?? []).map((b) => hz(Number(b.split('-')[0]))));
   readonly rc = computed(() => this.store.refComparison());
   readonly hz = hz;
-  readonly bounces = computed(() => this.store.otherVersions().filter((v) => v.kind !== 'reference'));
-  readonly refs = computed(() => this.store.otherVersions().filter((v) => v.kind === 'reference'));
+  readonly otherBounces = computed(() => this.store.otherVersions().filter((v) => v.kind !== 'reference'));
+  readonly otherRefs = computed(() => this.store.otherVersions().filter((v) => v.kind === 'reference'));
   /** With two bounces, the pairwise view below already shows the whole story. */
-  readonly trendShown = computed(() => this.store.mixVersions().length >= 3);
+  readonly trendShown = computed(() => this.store.bounces().length >= 3);
 
   label(id: number) {
     return this.store.versions().find((v) => v.id === id)?.label ?? '';
@@ -279,13 +278,15 @@ export class Compare {
       : '';
     return level + tone + keys + genres;
   });
-  readonly cur = computed(() => this.store.report()?.report ?? null);
-  readonly ref = computed(() => this.store.compareReport());
-  readonly refReport = computed(() => this.store.compareReport()?.report ?? null);
+  readonly current = computed(() => this.store.report()?.report ?? null);
+  /** The version compared against (another bounce here; the reference view has its own data). */
+  readonly partner = computed(() => this.store.compareReport());
+  readonly partnerReport = computed(() => this.partner()?.report ?? null);
   /** Shared time axis for the timeline and diff strip: the longer of the two versions. */
-  readonly span = computed(() => Math.max(this.cur()?.file.duration_s ?? 0, this.refReport()?.file.duration_s ?? 0, 1));
-  readonly curBands = computed(() => (this.c()?.third_octave_delta ?? []).map((d) => ({ fc: d.fc, level_db: 0, dev_db: d.dev_b })));
-  readonly refBands = computed(() => (this.c()?.third_octave_delta ?? []).map((d) => ({ fc: d.fc, level_db: 0, dev_db: d.dev_a })));
+  readonly span = computed(() => Math.max(this.current()?.file.duration_s ?? 0, this.partnerReport()?.file.duration_s ?? 0, 1));
+  // The backend compares a = partner with b = the open version.
+  readonly currentBands = computed(() => (this.c()?.third_octave_delta ?? []).map((d) => ({ fc: d.fc, level_db: 0, dev_db: d.dev_b })));
+  readonly partnerBands = computed(() => (this.c()?.third_octave_delta ?? []).map((d) => ({ fc: d.fc, level_db: 0, dev_db: d.dev_a })));
 
   readonly verdict = computed(() => {
     const c = this.c();

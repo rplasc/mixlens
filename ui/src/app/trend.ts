@@ -228,7 +228,7 @@ export class Trend {
   readonly GAP = 0.5;
 
   /** Bounces only: mixes, then masters, each in version order. */
-  readonly list = computed(() => bounceOrder(this.store.mixVersions()));
+  readonly list = computed(() => bounceOrder(this.store.bounces()));
   private readonly hasMaster = computed(() => this.list().some((v) => v.kind === 'master'));
   /** Index of the first master when there are mixes before it, otherwise -1. */
   private readonly split = computed(() => {
@@ -238,11 +238,8 @@ export class Trend {
   readonly top = computed(() => (this.split() > 0 ? this.GROUP_H : 0));
   readonly issuesY = computed(() => this.top() + METRICS.length * this.ROW);
   readonly H = computed(() => this.issuesY() + this.ISSUES_H + this.LABEL_H);
-  private readonly target = computed(() => this.store.settings()?.effective_target_lufs ?? -14);
-  private readonly ceiling = computed(() => {
-    const id = this.store.settings()?.main_platform;
-    return this.store.platforms().find((p) => p.id === id)?.ceiling_dbtp ?? -1;
-  });
+  private readonly target = this.store.target;
+  private readonly ceiling = computed(() => this.store.mainPlatform()?.ceiling_dbtp ?? -1);
   /** About the open version's kind of bounce; a reference has none, so the latest bounce's. */
   readonly verdict = computed(() => {
     const kind = this.store.version()?.kind;

@@ -231,6 +231,9 @@ export class GainChart {
                       }
                     </tbody>
                   </table>
+                } @else {
+                  <!-- Checked earlier (or by the assistant): the report keeps each platform's worst encode, not every row. -->
+                  <p>Worst encoded peak {{ signed(worstEncoded()) }} dBTP. Run again for each encode's numbers.</p>
                 }
               } @else {
                 <strong>Lossy streams not checked</strong>
@@ -294,7 +297,7 @@ export class Streaming implements OnInit {
   readonly num = num;
   readonly signed = signed;
   readonly s = computed(() => this.store.streaming());
-  readonly mainId = computed(() => this.store.settings()?.main_platform ?? 'spotify');
+  readonly mainId = computed(() => this.store.mainPlatform()?.id ?? null);
   /** Platforms whose detail row is expanded. */
   readonly open = signal<ReadonlySet<string>>(new Set());
 
@@ -331,18 +334,26 @@ export class Streaming implements OnInit {
     return p.checks.filter((c) => c.severity === 'info');
   }
 
+  /**
+   * Highest true peak among all encodes. Read from the report rather than `store.codec`, which
+   * only holds a check run while this version was open; between them the platforms cover every encode.
+   */
+  readonly worstEncoded = computed(() => {
+    const peaks = (this.s()?.platforms ?? []).map((p) => p.encoded_peak_dbtp).filter((p): p is number => p !== null);
+    return peaks.length ? Math.max(...peaks) : null;
+  });
+
   readonly encodeSev = computed<Severity>(() => {
-    if (!this.s()?.encoded) return 'info';
-    const peaks = (this.store.codec() ?? []).map((c) => c.true_peak_dbtp ?? -99);
-    if (peaks.some((p) => p > 0)) return 'error';
-    return peaks.some((p) => p > -0.5) ? 'warn' : 'ok';
+    const worst = this.worstEncoded();
+    if (!this.s()?.encoded || worst === null) return 'info';
+    return worst > 0 ? 'error' : worst > -0.5 ? 'warn' : 'ok';
   });
 
   readonly verdict = computed(() => {
     const s = this.s();
     if (!s) return null;
     const names = (ps: PlatformResult[]) =>
-      ps.length === s.platforms.length ? 'every platform' : list(ps.map((p) => p.name));
+      ps.length === s.platforms.length ? 'every platform' : joinNames(ps.map((p) => p.name));
     const clips = s.platforms.filter((p) => p.status === 'error');
     const tight = s.platforms.filter((p) => p.status === 'warn');
     const generalError = this.general().find((f) => f.severity === 'error');
@@ -370,6 +381,7 @@ export class Streaming implements OnInit {
   });
 }
 
-function list(names: string[]) {
+/** "Spotify, Apple Music and Tidal". */
+function joinNames(names: string[]) {
   return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
 }

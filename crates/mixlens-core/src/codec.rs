@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CodecResult {
@@ -38,13 +39,13 @@ fn command(bin: &Path) -> Command {
 
 /// Use the configured path, else look for ffmpeg on PATH.
 pub fn find_ffmpeg(custom: Option<&str>) -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = match custom.filter(|s| !s.trim().is_empty()) {
-        Some(p) => vec![PathBuf::from(p.trim())],
-        None => vec![PathBuf::from(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })],
-    };
-    candidates.into_iter().find(|p| {
-        command(p).arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
-    })
+    let p = PathBuf::from(match custom.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(p) => p,
+        None if cfg!(windows) => "ffmpeg.exe",
+        None => "ffmpeg",
+    });
+    let runs = command(&p).arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    runs.then_some(p)
 }
 
 /// Parse the summary block of ffmpeg's ebur128 filter.
@@ -77,7 +78,10 @@ fn measure(ffmpeg: &Path, file: &Path) -> Result<(Option<f64>, Option<f64>), Str
 }
 
 pub fn codec_check(input: &Path, ffmpeg: &Path) -> Vec<CodecResult> {
-    let dir = std::env::temp_dir().join(format!("mixlens-codec-{}", std::process::id()));
+    // One folder per call: concurrent checks in the same process must not share files.
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("mixlens-codec-{}-{call}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let results: Vec<CodecResult> = std::thread::scope(|s| {
         let handles: Vec<_> = PRESETS

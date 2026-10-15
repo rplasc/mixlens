@@ -190,8 +190,14 @@ fn main() {
                 bad("section needs 0 <= t0 < t1 (seconds)");
             }
             let (a, r) = analyze(&args.pos[0], &targets);
-            if t0 >= r.file.duration_s {
-                bad(format!("t0 is past the end of the file ({:.1} s)", r.file.duration_s));
+            let duration = r.file.duration_s;
+            if t0 >= duration {
+                bad(format!("t0 is past the end of the file ({duration:.1} s)"));
+            }
+            let t1 = t1.min(duration);
+            // Loudness is gated over 400 ms blocks; anything shorter has no reading.
+            if t1 - t0 < 0.4 {
+                bad("section needs at least 0.4 s of audio");
             }
             serde_json::json!({
                 "loudness": tools::section_loudness(&r, t0, t1),

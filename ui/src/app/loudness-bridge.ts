@@ -9,7 +9,7 @@ const MARK_LABEL: Record<PeakKind, string> = {
   true_peak: 'True peak over ceiling',
 };
 
-interface Series { values: number[]; hop: number; color: 'a' | 'b' }
+interface Series { values: number[]; color: 'a' | 'b' }
 
 /** Short-term loudness across the whole song, with sections shaded. The app's signature view. */
 @Component({
@@ -72,8 +72,8 @@ interface Series { values: number[]; hop: number; color: 'a' | 'b' }
         <g [attr.transform]="'translate(' + (h.x > w() - 150 ? h.x - 142 : h.x + 8) + ',' + (top + 6) + ')'">
           <rect width="134" [attr.height]="h.b !== null ? 50 : 34" rx="4" class="tip" />
           <text x="8" y="15" class="tip-t">{{ h.time }}</text>
-          <text x="8" y="29" class="tip-v a">{{ h.a }} LUFS</text>
-          @if (h.b !== null) { <text x="8" y="44" class="tip-v b">{{ h.b }} LUFS</text> }
+          <text x="8" y="29" class="tip-v a">{{ h.a }}</text>
+          @if (h.b !== null) { <text x="8" y="44" class="tip-v b">{{ h.b }}</text> }
         </g>
       }
     </svg>
@@ -243,8 +243,8 @@ export class LoudnessBridge {
   readonly paths = computed(() => {
     const series: Series[] = [];
     const cmp = this.compareValues();
-    if (cmp) series.push({ values: cmp, hop: this.hop(), color: 'b' });
-    series.push({ values: this.values(), hop: this.hop(), color: 'a' });
+    if (cmp) series.push({ values: cmp, color: 'b' });
+    series.push({ values: this.values(), color: 'a' });
     const base = this.top + this.plotH;
     return series.map((s) => {
       const pts = s.values.map((v, i) => `${this.x(this.t(i)).toFixed(1)},${this.y(v).toFixed(1)}`);
@@ -263,7 +263,7 @@ export class LoudnessBridge {
     const vals = this.values();
     if (i < 0 || i >= vals.length) return this.hover.set(null);
     const cmp = this.compareValues();
-    const fmt = (v: number | undefined) => (v === undefined || v <= -100 ? 'silent' : num(v));
+    const fmt = (v: number | undefined) => (v === undefined || v <= -100 ? 'silent' : `${num(v)} LUFS`);
     this.hover.set({ x: px, time: clock(t), a: fmt(vals[i]), b: cmp ? fmt(cmp[i]) : null });
   }
 

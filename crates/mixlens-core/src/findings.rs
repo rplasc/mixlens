@@ -5,10 +5,6 @@ use crate::key::Role;
 use crate::streaming::Normalization;
 use crate::report::*;
 
-fn f(sev: Severity, code: &str, title: impl Into<String>, detail: impl Into<String>) -> Finding {
-    Finding { severity: sev, code: code.into(), title: title.into(), detail: detail.into() }
-}
-
 /// Rule limits that a genre preset can change. Defaults are the genre-neutral values.
 struct Thresholds {
     mix_plr_min: f64,
@@ -107,7 +103,7 @@ fn located(marks: &[PeakMark], kind: PeakKind) -> String {
 
 pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
     if t.kind == Kind::Reference {
-        return vec![f(Severity::Ok, "reference", "Reference track", "Used as a reference: not checked against mix or master rules.")];
+        return vec![Finding::new(Severity::Ok, "reference", "Reference track", "Used as a reference: not checked against mix or master rules.")];
     }
     let th = Thresholds::new(t);
     let genre_name = t.genre.as_ref().map(|g| g.name.as_str());
@@ -119,7 +115,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
 
     // ---- clipping / peaks ----
     if l.samples_over_full_scale > 0 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Error,
             "over_full_scale",
             "Samples above 0 dBFS",
@@ -131,7 +127,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         ));
     }
     if l.flat_top_runs > 0 && l.sample_peak_dbfs > -0.5 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Error,
             "clipping",
             "Hard clipping",
@@ -146,8 +142,9 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
 
     match t.kind {
         Kind::Mix => {
-            if l.true_peak_dbtp > -1.0 {
-                out.push(f(
+            // Same limit as the true-peak markers, so a warning always has places to show.
+            if tp_ceiling(l, t).is_some_and(|c| l.true_peak_dbtp > c + 0.05) {
+                out.push(Finding::new(
                     Severity::Warn,
                     "mix_headroom",
                     "Little headroom for mastering",
@@ -158,17 +155,19 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                     ),
                 ));
             } else {
-                out.push(f(Severity::Ok, "mix_headroom", "Room for mastering", format!("True peak {:.1} dBTP leaves the master room to work.", l.true_peak_dbtp)));
+                out.push(Finding::new(Severity::Ok, "mix_headroom", "Room for mastering", format!("True peak {:.1} dBTP leaves the master room to work.", l.true_peak_dbtp)));
             }
             if l.plr_db < th.mix_plr_min {
-                out.push(f(
+                out.push(Finding::new(
                     Severity::Warn,
                     "mix_overcompressed",
                     "Mix bus may be over-compressed",
-                    match genre_name {
-                        Some(g) => format!("Peak-to-loudness ratio is {:.1} dB. {g} mixes usually sit above about {:.0} dB before mastering.", l.plr_db, th.mix_plr_min),
-                        None => format!("Peak-to-loudness ratio is {:.1} dB. Mixes usually sit above about 10 dB before mastering.", l.plr_db),
-                    },
+                    format!(
+                        "Peak-to-loudness ratio is {:.1} dB. {} usually sit above about {:.0} dB before mastering.",
+                        l.plr_db,
+                        genre_name.map_or("Mixes".to_string(), |g| format!("{g} mixes")),
+                        th.mix_plr_min
+                    ),
                 ));
             }
         }
@@ -176,7 +175,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             let loud = l.integrated_lufs > t.target_lufs + 0.05;
             let ceiling = tp_ceiling(l, t).unwrap_or(t.ceiling_dbtp);
             if l.true_peak_dbtp > ceiling + 0.05 {
-                out.push(f(
+                out.push(Finding::new(
                     Severity::Error,
                     "tp_ceiling",
                     "True peak above streaming ceiling",
@@ -189,7 +188,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                     ),
                 ));
             } else {
-                out.push(f(Severity::Ok, "tp_ceiling", "True peak under the ceiling", format!("{:.1} dBTP against a {:.0} dBTP ceiling.", l.true_peak_dbtp, ceiling)));
+                out.push(Finding::new(Severity::Ok, "tp_ceiling", "True peak under the ceiling", format!("{:.1} dBTP against a {:.0} dBTP ceiling.", l.true_peak_dbtp, ceiling)));
             }
             let diff = l.integrated_lufs - t.target_lufs;
             let headroom_to_boost = t.ceiling_dbtp - l.true_peak_dbtp;
@@ -221,40 +220,47 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                             ),
                         ),
                     };
-                    out.push(f(sev, "loudness_low", format!("Quieter than {name}'s target"), detail));
+                    out.push(Finding::new(sev, "loudness_low", format!("Quieter than {name}'s target"), detail));
                 } else if diff > 2.0 {
-                    out.push(f(
+                    out.push(Finding::new(
                         Severity::Info,
                         "loudness_high",
                         format!("Louder than {name}'s target"),
                         format!("{:.1} LUFS will be turned down {:.1} dB on {name}. Extra limiting buys nothing there.", l.integrated_lufs, -pb.gain_db),
                     ));
                 } else {
-                    out.push(f(Severity::Ok, "loudness", "Loudness on target", format!("{:.1} LUFS ({name} target {:.0}).", l.integrated_lufs, t.target_lufs)));
+                    out.push(Finding::new(Severity::Ok, "loudness", "Loudness on target", format!("{:.1} LUFS ({name} target {:.0}).", l.integrated_lufs, t.target_lufs)));
                 }
             } else if diff < -1.0 {
                 let boost = (-diff).min(headroom_to_boost.max(0.0));
-                out.push(f(
-                    Severity::Warn,
-                    "loudness_low",
-                    "Quieter than the streaming target",
-                    format!(
-                        "{:.1} LUFS vs {:.0} LUFS. Platforms only raise it by about {:.1} dB (limited by peak headroom), so it will play about {:.1} dB quieter than other tracks.",
-                        l.integrated_lufs,
-                        t.target_lufs,
-                        boost,
-                        -diff - boost
-                    ),
-                ));
+                let short = -diff - boost;
+                let (sev, detail) = if short >= 0.5 {
+                    (
+                        Severity::Warn,
+                        format!(
+                            "{:.1} LUFS vs {:.0} LUFS. Platforms only raise it by about {:.1} dB (limited by peak headroom), so it will play about {:.1} dB quieter than other tracks.",
+                            l.integrated_lufs, t.target_lufs, boost, short
+                        ),
+                    )
+                } else {
+                    (
+                        Severity::Info,
+                        format!(
+                            "{:.1} LUFS vs {:.0} LUFS. Platforms that turn quiet tracks up raise it about {:.1} dB; there's enough peak headroom to reach the target.",
+                            l.integrated_lufs, t.target_lufs, boost
+                        ),
+                    )
+                };
+                out.push(Finding::new(sev, "loudness_low", "Quieter than the streaming target", detail));
             } else if diff > 2.0 {
-                out.push(f(
+                out.push(Finding::new(
                     Severity::Info,
                     "loudness_high",
                     "Louder than the streaming target",
                     format!("{:.1} LUFS will be turned down {:.1} dB. Extra limiting buys nothing on normalized platforms.", l.integrated_lufs, diff),
                 ));
             } else {
-                out.push(f(Severity::Ok, "loudness", "Loudness on target", format!("{:.1} LUFS (target {:.0}).", l.integrated_lufs, t.target_lufs)));
+                out.push(Finding::new(Severity::Ok, "loudness", "Loudness on target", format!("{:.1} LUFS (target {:.0}).", l.integrated_lufs, t.target_lufs)));
             }
         }
         Kind::Reference => {}
@@ -262,21 +268,21 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
 
     // ---- file edges ----
     if e.leading_silence_s > 1.0 {
-        out.push(f(Severity::Warn, "leading_silence", "Long silence at the start", format!("First sound at {:.1} s.", e.leading_silence_s)));
+        out.push(Finding::new(Severity::Warn, "leading_silence", "Long silence at the start", format!("First sound at {:.1} s.", e.leading_silence_s)));
     }
     if e.trailing_silence_s > 10.0 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Error,
             "trailing_silence",
             "Long silence at the end",
             format!("{:.0} s of silence after the last sound. The track length will include it.", e.trailing_silence_s),
         ));
     } else if e.trailing_silence_s > 4.0 {
-        out.push(f(Severity::Info, "trailing_silence", "Silence at the end", format!("{:.1} s after the last sound.", e.trailing_silence_s)));
+        out.push(Finding::new(Severity::Info, "trailing_silence", "Silence at the end", format!("{:.1} s after the last sound.", e.trailing_silence_s)));
     }
     // Above -60 dBFS (the level that counts as sound) the ending audibly stops; below it, only a faint tail is cut.
     if e.tail_truncated && e.tail_last50ms_dbfs > -60.0 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "tail_truncated",
             "Sound cuts off at the end",
@@ -286,7 +292,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             ),
         ));
     } else if e.tail_truncated {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Info,
             "tail_truncated",
             "Quiet tail cut off at the end",
@@ -302,7 +308,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         ));
     }
     for gap in &e.internal_silences {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Error,
             "internal_silence",
             "Digital silence inside the song",
@@ -314,7 +320,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         ));
     }
     if t.kind == Kind::Mix && e.fade_out_detected {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Info,
             "mix_fade",
             "Fade-out baked into the mix",
@@ -325,10 +331,10 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
     // ---- DC / balance ----
     let dc = l.dc_offset[0].abs().max(l.dc_offset[1].abs());
     if dc > 1e-3 {
-        out.push(f(Severity::Warn, "dc_offset", "DC offset", format!("{:.4} (≈{:.0} dBFS). A high-pass at ~10 Hz removes it.", dc, 20.0 * dc.log10())));
+        out.push(Finding::new(Severity::Warn, "dc_offset", "DC offset", format!("{:.4} (≈{:.0} dBFS). A high-pass at ~10 Hz removes it.", dc, 20.0 * dc.log10())));
     }
     if l.lr_balance_db.abs() > 1.5 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "lr_balance",
             "Left/right imbalance",
@@ -342,7 +348,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
 
     // ---- stereo ----
     if s.low_correlation < th.low_corr_min {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "low_end_width",
             "Wide low end",
@@ -351,7 +357,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
     }
     let loud_neg: Vec<&CorrWindow> = s.low_corr_windows.iter().filter(|w| w.corr < 0.0 && w.level_dbfs > -40.0).collect();
     if !loud_neg.is_empty() {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "phase",
             "Out-of-phase moments",
@@ -365,14 +371,14 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         ));
     }
     if s.mono_loss_lu < -1.5 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "mono",
             "Loses level in mono",
             format!("{:.1} LU quieter when folded to mono, so phone speakers and mono club systems lose part of the mix.", -s.mono_loss_lu),
         ));
     } else {
-        out.push(f(Severity::Ok, "mono", "Holds up in mono", format!("Level changes {:+.2} LU when folded to mono.", s.mono_loss_lu)));
+        out.push(Finding::new(Severity::Ok, "mono", "Holds up in mono", format!("Level changes {:+.2} LU when folded to mono.", s.mono_loss_lu)));
     }
 
     // ---- tone ----
@@ -389,7 +395,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                     .map(|p| (p, k.key_name.as_str()))
             });
             out.push(match musical {
-                Some((p, key)) => f(
+                Some((p, key)) => Finding::new(
                     Severity::Info,
                     "low_mid_buildup",
                     "Low-mid build-up on a key note",
@@ -398,7 +404,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                         b.fc, b.dev_db, p.note, p.hz, p.role.label(), p.hz
                     ),
                 ),
-                None => f(
+                None => Finding::new(
                     Severity::Warn,
                     "low_mid_buildup",
                     "Low-mid build-up",
@@ -409,12 +415,12 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
     }
     if let Some(b) = dev(2000.0, 5000.0).into_iter().min_by(|a, b| a.dev_db.partial_cmp(&b.dev_db).unwrap()) {
         if b.dev_db < -3.5 {
-            out.push(f(Severity::Info, "presence_dip", "Presence dip", format!("{:.0} Hz sits {:.1} dB below the overall tilt, which can push vocals and leads back.", b.fc, -b.dev_db)));
+            out.push(Finding::new(Severity::Info, "presence_dip", "Presence dip", format!("{:.0} Hz sits {:.1} dB below the overall tilt, which can push vocals and leads back.", b.fc, -b.dev_db)));
         }
     }
     if let Some(b) = sp.third_octave.iter().find(|b| (b.fc - 12700.0).abs() < 400.0) {
         if b.dev_db < -5.0 {
-            out.push(f(
+            out.push(Finding::new(
                 Severity::Info,
                 "dark_top",
                 "Dark top end",
@@ -423,7 +429,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         }
     }
     if sp.sibilance.p99_db > th.sibilance_p99_max {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "sibilance",
             "Strong 5–10 kHz peaks",
@@ -431,7 +437,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         ));
     }
     if sp.sub30_share_db > -20.0 {
-        out.push(f(
+        out.push(Finding::new(
             Severity::Warn,
             "subsonic",
             "Heavy sub-30 Hz energy",
@@ -448,14 +454,14 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         let mut off: Vec<_> = m.bands.iter().filter(|b| !b.within()).collect();
         off.sort_by(|a, b| excess(b).partial_cmp(&excess(a)).unwrap());
         if off.is_empty() {
-            out.push(f(Severity::Ok, "genre_tone", format!("Tonal balance fits {}", g.name), format!("Every octave is within tolerance of a typical {} balance.", g.name)));
+            out.push(Finding::new(Severity::Ok, "genre_tone", format!("Tonal balance fits {}", g.name), format!("Every octave is within tolerance of a typical {} balance.", g.name)));
         } else {
             let list: Vec<String> = off
                 .iter()
                 .take(3)
                 .map(|b| format!("{} {:.1} dB {}", band_label(b.lo, b.hi), b.delta_db.abs(), if b.delta_db < 0.0 { "lower" } else { "higher" }))
                 .collect();
-            out.push(f(
+            out.push(Finding::new(
                 Severity::Warn,
                 "genre_tone",
                 format!("Tonal balance differs from typical {}", g.name),
@@ -468,7 +474,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         }
         let tilt = sp.tilt_db_per_oct;
         if tilt < g.tilt_range.0 || tilt > g.tilt_range.1 {
-            out.push(f(
+            out.push(Finding::new(
                 Severity::Info,
                 "genre_tilt",
                 if tilt < g.tilt_range.0 { format!("Darker than typical {}", g.name) } else { format!("Brighter than typical {}", g.name) },
@@ -495,7 +501,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                         t.target_lufs
                     )
                 };
-                out.push(f(
+                out.push(Finding::new(
                     Severity::Info,
                     "genre_loudness",
                     format!("{} than most {} masters", if quieter { "Quieter" } else { "Louder" }, g.name),
@@ -523,7 +529,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                 } else {
                     (format!("Dynamics differ from typical {}", g.name), "")
                 };
-                out.push(f(Severity::Info, "genre_dynamics", title, format!("{}.{why}", text.join(", and "))));
+                out.push(Finding::new(Severity::Info, "genre_dynamics", title, format!("{}.{why}", text.join(", and "))));
             }
         }
     }
@@ -534,7 +540,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         off.sort_by(|a, b| b.above_median_db.partial_cmp(&a.above_median_db).unwrap());
         if !off.is_empty() {
             let list: Vec<String> = off.iter().take(3).map(|p| format!("{:.0} Hz ({}, {}) {:+.0} dB", p.hz, p.note, p.role.label(), p.above_median_db)).collect();
-            out.push(f(
+            out.push(Finding::new(
                 Severity::Warn,
                 "lf_resonance",
                 "Bass peaks outside the key",
@@ -547,7 +553,7 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             ));
         }
         if let Some(c) = k.tuning_offset_cents.filter(|c| c.abs() > 20.0) {
-            out.push(f(
+            out.push(Finding::new(
                 Severity::Info,
                 "tuning",
                 format!("Tuned {:+.0} cents from A=440", c),
@@ -560,14 +566,12 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
     }
 
     // ---- format ----
-    if let Some(d) = &r.dither {
-        if d.bits <= 16 && d.samples_checked > 0 && !d.detected && d.nonzero_fraction < 0.01 {
-            out.push(f(Severity::Info, "dither", "No dither visible", d.note.clone()));
-        }
+    if let Some(d) = r.dither.as_ref().filter(|d| d.missing()) {
+        out.push(Finding::new(Severity::Info, "dither", "No dither visible", d.note.clone()));
     }
     if r.file.sample_format == "float32" || r.file.sample_format == "float64" {
         if t.kind == Kind::Master {
-            out.push(f(Severity::Info, "format", "Floating-point master", "Most distributors want 16- or 24-bit integer WAV. Export a dithered integer copy."));
+            out.push(Finding::new(Severity::Info, "format", "Floating-point master", "Most distributors want 16- or 24-bit integer WAV. Export a dithered integer copy."));
         }
     }
 

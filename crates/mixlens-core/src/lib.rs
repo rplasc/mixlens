@@ -72,7 +72,8 @@ mod tests {
         let x = sine(fs, 1000.0, 10.0, 0.5);
         let a = audio::from_planar(fs, x.clone(), x, "sine");
         let r = analyze::analyze(&a, &Targets::default()).unwrap();
-        // A 1 kHz sine at -6 dBFS in both channels reads about -3.0 LUFS... (-6 dBFS peak => -9 dBFS RMS => +3 dB for 2 ch, -0.691 offset, ~0 K-weight gain at 1k)
+        // -6 dBFS sine in both channels: -9 dBFS RMS each, +3 dB for two channels, and K-weighting
+        // at 1 kHz offsets the -0.691 constant, so integrated loudness lands near -6 LUFS.
         assert!((r.loudness.integrated_lufs - (-6.02)).abs() < 0.3, "{}", r.loudness.integrated_lufs);
         assert!((r.loudness.sample_peak_dbfs - (-6.02)).abs() < 0.01);
         assert!((r.stereo.correlation - 1.0).abs() < 1e-6);
@@ -138,6 +139,33 @@ mod tests {
         assert_eq!(sev(&r), Some(Severity::Info));
         refresh_findings(&mut r, &Targets { key: MusicalKey::parse("E major"), ..Targets::default() });
         assert_eq!(sev(&r), Some(Severity::Warn), "F is out of E major");
+    }
+
+    #[test]
+    fn rule_wording_matches_thresholds() {
+        let fs = 48000;
+        let x = sine(fs, 1000.0, 10.0, 0.5);
+        let a = audio::from_planar(fs, x.clone(), x, "sine");
+        let mut r = analyze::analyze(&a, &Targets::default()).unwrap();
+        let find = |r: &Report, code: &str| r.findings.iter().find(|f| f.code == code).cloned().unwrap();
+
+        // The over-compression rule quotes the limit it applies.
+        r.loudness.plr_db = 8.5;
+        refresh_findings(&mut r, &Targets::default());
+        assert!(find(&r, "mix_overcompressed").detail.contains("about 9 dB"));
+
+        // A quiet master with plenty of peak headroom reaches the target: no warning.
+        (r.loudness.integrated_lufs, r.loudness.true_peak_dbtp) = (-16.0, -6.0);
+        let master = Targets { kind: Kind::Master, ..Targets::default() };
+        refresh_findings(&mut r, &master);
+        let low = find(&r, "loudness_low");
+        assert_eq!(low.severity, Severity::Info);
+        assert!(!low.detail.contains("limited"), "{}", low.detail);
+
+        // Without the headroom, it stays a warning.
+        r.loudness.true_peak_dbtp = -2.0;
+        refresh_findings(&mut r, &master);
+        assert_eq!(find(&r, "loudness_low").severity, Severity::Warn);
     }
 
     #[test]

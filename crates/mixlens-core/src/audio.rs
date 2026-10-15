@@ -6,7 +6,7 @@ use std::io::Cursor;
 use std::path::Path;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{
-    DecoderOptions, CODEC_TYPE_NULL, CODEC_TYPE_PCM_F32BE, CODEC_TYPE_PCM_F32LE, CODEC_TYPE_PCM_F64BE, CODEC_TYPE_PCM_F64LE,
+    DecoderOptions, CODEC_TYPE_ALAC, CODEC_TYPE_NULL, CODEC_TYPE_PCM_F32BE, CODEC_TYPE_PCM_F32LE, CODEC_TYPE_PCM_F64BE, CODEC_TYPE_PCM_F64LE,
     CODEC_TYPE_PCM_S16BE, CODEC_TYPE_PCM_S16LE, CODEC_TYPE_PCM_S24BE, CODEC_TYPE_PCM_S24LE, CODEC_TYPE_PCM_S32BE,
     CODEC_TYPE_PCM_S32LE,
 };
@@ -56,12 +56,6 @@ impl Audio {
     }
 }
 
-/// Hash a file without decoding it.
-pub fn hash_file(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path)?;
-    Ok(blake3::hash(&bytes).to_hex().to_string())
-}
-
 pub fn decode_file(path: &Path) -> Result<Audio> {
     let bytes = std::fs::read(path)?;
     let size_bytes = bytes.len() as u64;
@@ -86,7 +80,12 @@ pub fn decode_file(path: &Path) -> Result<Audio> {
     let params = track.codec_params.clone();
     let sample_rate = params.sample_rate.ok_or_else(|| Error::Decode("unknown sample rate".into()))?;
     let channels = params.channels.map(|c| c.count() as u32).unwrap_or(2);
-    let bits = params.bits_per_sample.or(params.bits_per_coded_sample);
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&params, &DecoderOptions::default())
+        .map_err(|e| Error::Decode(format!("no decoder: {e}")))?;
+    // ALAC keeps its bit depth in the magic cookie (byte 5), which the decoder above accepted.
+    let alac_bits = (params.codec == CODEC_TYPE_ALAC).then(|| params.extra_data.as_deref().and_then(|c| c.get(5)).map(|&b| b as u32)).flatten();
+    let bits = params.bits_per_sample.or(params.bits_per_coded_sample).or(alac_bits);
     let by_codec = match params.codec {
         c if c == CODEC_TYPE_PCM_F32LE || c == CODEC_TYPE_PCM_F32BE => Some("float32"),
         c if c == CODEC_TYPE_PCM_F64LE || c == CODEC_TYPE_PCM_F64BE => Some("float64"),
@@ -107,10 +106,6 @@ pub fn decode_file(path: &Path) -> Result<Audio> {
             None => "compressed".to_string(),
         },
     } };
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&params, &DecoderOptions::default())
-        .map_err(|e| Error::Decode(format!("no decoder: {e}")))?;
 
     let cap = params.n_frames.unwrap_or(0) as usize;
     let mut left = Vec::with_capacity(cap);
