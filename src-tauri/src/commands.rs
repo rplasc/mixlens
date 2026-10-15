@@ -179,6 +179,22 @@ pub fn update_version_context(state: State<'_, Shared>, id: i64, genre: Option<S
     set_version_context(&state.db.lock().unwrap(), id, genre, key)
 }
 
+/// Longest note kept, in characters.
+const MAX_NOTES: usize = 4000;
+
+/// Save the user's notes on a version.
+pub fn set_version_notes(c: &rusqlite::Connection, id: i64, notes: &str) -> R<VersionSummary> {
+    let notes: String = notes.trim().chars().take(MAX_NOTES).collect();
+    db::set_version_notes(c, id, &notes).map_err(err)?;
+    let v = db::get_version(c, id).map_err(err)?.ok_or_else(|| format!("version {id} not found"))?;
+    Ok(db::summarize(&v))
+}
+
+#[tauri::command]
+pub fn update_version_notes(state: State<'_, Shared>, id: i64, notes: String) -> R<VersionSummary> {
+    set_version_notes(&state.db.lock().unwrap(), id, &notes)
+}
+
 #[tauri::command]
 pub fn delete_version(state: State<'_, Shared>, id: i64) -> R<()> {
     state.forget(&[id]);
@@ -191,8 +207,39 @@ pub fn get_report(state: State<'_, Shared>, id: i64) -> R<Value> {
     let mut out = serde_json::to_value(&v.report).map_err(err)?;
     if let Some(o) = out.as_object_mut() {
         o.remove("kblocks");
+        // Per-block peaks are only for deriving `peak_marks`.
+        if let Some(l) = o.get_mut("loudness").and_then(|l| l.as_object_mut()) {
+            l.remove("peak_map");
+        }
     }
-    Ok(json!({"id": v.id, "label": v.label, "kind": v.kind, "path": v.path, "report": out}))
+    let peaks_located = v.report.loudness.peak_map.is_some();
+    Ok(json!({"id": v.id, "label": v.label, "kind": v.kind, "path": v.path, "peaks_located": peaks_located, "report": out}))
+}
+
+/// Record peak positions for a version analyzed before they were kept, by re-analyzing the file.
+/// Fails if the file has moved or changed since it was added.
+pub fn locate_peaks_in(s: &Shared, id: i64) -> R<VersionSummary> {
+    let v = s.version(id)?;
+    if v.report.loudness.peak_map.is_some() {
+        return Ok(db::summarize(&v));
+    }
+    let audio = s.audio(id)?;
+    let targets = state::targets_for_row(&s.db.lock().unwrap(), &v, v.kind);
+    let fresh = mixlens_core::analyze::analyze(&audio, &targets).map_err(err)?;
+    // Re-read: the version may have been renamed or retyped while the file was analyzed.
+    let c = s.db.lock().unwrap();
+    let mut v = db::get_version(&c, id).map_err(err)?.ok_or_else(|| format!("version {id} not found"))?;
+    v.report.loudness.peak_map = fresh.loudness.peak_map;
+    let targets = state::targets_for_row(&c, &v, v.kind);
+    refresh_findings(&mut v.report, &targets);
+    db::update_version(&c, id, &v.label, v.kind, &v.report).map_err(err)?;
+    Ok(db::summarize(&v))
+}
+
+#[tauri::command]
+pub async fn locate_peaks(state: State<'_, Shared>, id: i64) -> R<VersionSummary> {
+    let s: Shared = state.inner().clone();
+    blocking(move || locate_peaks_in(&s, id)).await
 }
 
 #[tauri::command]

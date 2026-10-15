@@ -11,7 +11,7 @@ pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "get_report",
-            description: "Full measurement report for one version: loudness, peaks, stereo, third-octave balance vs tilt, low-frequency peaks, sibilance, edges/silence, sections, dither, and rule-based findings.",
+            description: "Full measurement report for one version, plus the user's notes on it: loudness, peaks and where they are (peak_marks), stereo, third-octave balance vs tilt, low-frequency peaks, sibilance, edges/silence, sections, dither, and rule-based findings.",
             schema: json!({"type": "object", "properties": {"version_id": {"type": "integer"}}, "required": ["version_id"]}),
         },
         ToolDef {
@@ -55,7 +55,7 @@ pub fn execute(inner: &Inner, name: &str, args: &Value) -> Result<Value, String>
         "get_report" => {
             let v = inner.version(id(args, "version_id")?)?;
             let mut out = v.report.to_ai_json();
-            out["version"] = json!({"id": v.id, "label": v.label, "kind": v.kind});
+            out["version"] = json!({"id": v.id, "label": v.label, "kind": v.kind, "notes": v.notes});
             Ok(out)
         }
         "compare_versions" => {

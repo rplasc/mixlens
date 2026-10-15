@@ -57,6 +57,8 @@ export class Store {
   readonly platforms = signal<Platform[]>([]);
   readonly section = signal<SectionAnalysis | null>(null);
   readonly sectionIndex = signal<number | null>(null);
+  /** The peak marker pinned on the loudness timeline (index into `peak_marks`). */
+  readonly markIndex = signal<number | null>(null);
 
   readonly analyzing = signal<string[]>([]);
   readonly dragOver = signal(false);
@@ -247,7 +249,34 @@ export class Store {
     const report = await api.getReport(id);
     if (this.versionId() !== id) return;
     this.report.set(report);
+    // Marks are re-derived for the new rules, so an index may point elsewhere now.
+    this.markIndex.set(null);
+    void this.locatePeaks(report);
     if (this.comparison() || this.refComparison()) await this.runCompare();
+  }
+
+  /** Versions analyzed before peak positions were recorded find them in the background. */
+  private async locatePeaks(env: ReportEnvelope) {
+    if (env.peaks_located !== false || env.kind === 'reference' || !inTauri()) return;
+    try {
+      const v = await api.locatePeaks(env.id);
+      this.versions.update((list) => list.map((x) => (x.id === v.id ? v : x)));
+      if (this.versionId() === env.id) await this.reloadReport(env.id);
+    } catch {
+      // The file moved or changed since it was added: the timeline just has no peak markers.
+    }
+  }
+
+  /** The id is explicit, so a save fired on blur while switching versions lands on the right one. */
+  async saveNotes(id: number, notes: string): Promise<boolean> {
+    try {
+      const v = await api.updateVersionNotes(id, notes);
+      if (v) this.versions.update((list) => list.map((x) => (x.id === id ? v : x)));
+      return true;
+    } catch (e) {
+      this.fail(e);
+      return false;
+    }
   }
 
   private resetDerived() {
@@ -260,6 +289,7 @@ export class Store {
     this.streaming.set(null);
     this.section.set(null);
     this.sectionIndex.set(null);
+    this.markIndex.set(null);
   }
 
   async selectVersion(id: number) {
@@ -277,6 +307,7 @@ export class Store {
       const report = await api.getReport(id);
       if (this.versionId() !== id) return;
       this.report.set(report);
+      void this.locatePeaks(report);
       if (this.tab() === 'compare') await this.runCompare();
       if (this.tab() === 'streaming') await this.loadStreaming();
     } catch (e) {

@@ -63,6 +63,8 @@ How to read the measurements:
 - genre_match compares octave energy shares with the song's genre preset: delta_db beyond tolerance_db is unusual for the genre, and checks lists typical ranges. Presets are rough starting points, so a reference track outranks them.
 - key_analysis interprets tonal peaks in the song's key: role root/fifth/third/in key are the music; out_of_key or between_notes peaks are likely room or EQ resonances or clashing notes. tuning_offset_cents is the song's tuning versus A=440. safe_freqs are root and fifth frequencies that suit bass boosts.
 - tail_truncated means the file ends while sound is still decaying; trailing silence counts toward track length.
+- peak_marks lists where clipping (over_full_scale, clipping) and true peak over the ceiling (true_peak) happen: start_s/end_s and the highest true peak there. Cite those times so the user can find them in their DAW.
+- Versions may carry notes: the user's own words about that version (what they changed, what they heard, often with times). Treat notes as claims to check, not measurements. For "what changed since my notes", run compare_versions from the noted version to the newer one and say which noted changes the measurements confirm, which they don't show, and what else changed.
 
 Streaming: call streaming_check for how each platform turns the track up or down, how loud it then plays next to other tracks, and whether it meets ceilings; run codec_check first so it can use post-encode peaks. Spotify documents its rules (-14 LUFS; quieter masters only raised until the true peak reaches -1 dBTP; true peak <= -1 dBTP, or <= -2 dBTP when louder than -14 LUFS; Premium Loud -11 with a limiter, Quiet -19). The other platforms' figures (Apple Music ~-16, YouTube/Amazon/Tidal ~-14 turn-down only, Deezer ~-15) are reported by third parties, not published, so say so when it matters. Distributors commonly want 16- or 24-bit WAV at 44.1 kHz or higher; dither when reducing bit depth."#;
 
@@ -70,8 +72,24 @@ fn fmt_time(s: f64) -> String {
     format!("{}:{:04.1}", (s / 60.0).floor() as i64, s % 60.0)
 }
 
+/// Most characters of a version's notes sent with every question; get_report has them in full.
+const NOTES_IN_CONTEXT: usize = 500;
+
+/// A version's notes on one line, shortened for the per-turn context. `None` when empty.
+fn notes_line(notes: &str) -> Option<String> {
+    let one = notes.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" / ");
+    if one.is_empty() {
+        return None;
+    }
+    let mut short: String = one.chars().take(NOTES_IN_CONTEXT).collect();
+    if short.len() < one.len() {
+        short.push('…');
+    }
+    Some(short)
+}
+
 /// Compact per-version context, rebuilt every turn (cheap) so the system prompt stays cacheable.
-fn project_context(st: &settings::Settings, project: Option<&db::Project>, presets: &[mixlens_core::GenrePreset], rows: &[db::VersionRow], focus: &[i64]) -> String {
+pub(crate) fn project_context(st: &settings::Settings, project: Option<&db::Project>, presets: &[mixlens_core::GenrePreset], rows: &[db::VersionRow], focus: &[i64]) -> String {
     let genre = project.and_then(|p| p.genre.as_deref()).map(|id| presets.iter().find(|g| g.id == id).map_or(id, |g| g.name.as_str()));
     let key = project.and_then(|p| p.key).map(|k| k.name());
     let platform = match crate::state::main_platform(st) {
@@ -111,6 +129,10 @@ fn project_context(st: &settings::Settings, project: Option<&db::Project>, prese
             let key = v.key.map(|k| k.name());
             s.pop();
             s.push_str(&format!(" | own genre {}, key {}\n", genre.unwrap_or("not set"), key.as_deref().unwrap_or("not set")));
+        }
+        if let Some(notes) = notes_line(&v.notes) {
+            s.pop();
+            s.push_str(&format!(" | notes: \"{notes}\"\n"));
         }
     }
     if !focus.is_empty() {

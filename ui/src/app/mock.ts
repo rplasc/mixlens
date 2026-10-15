@@ -29,6 +29,12 @@ export async function mockInvoke(cmd: string, args: Record<string, any>): Promis
     case 'list_genre_presets': return d.presets ?? [];
     case 'update_project_context': return { ...d.projects.find((p: any) => p.id === args['id']), genre: args['genre'], key: args['key'] };
     case 'update_version_context': return null;
+    case 'update_version_notes': {
+      const v = Object.values(d.versions as Record<string, any[]>).flat().find((x) => x.id === args['id']);
+      if (v) v.notes = args['notes'];
+      return v ?? null;
+    }
+    case 'locate_peaks': return null;
     case 'list_platforms': return d.platforms ?? [];
     case 'streaming_report': return d.streaming ?? null;
     case 'compare_reference': return d.reference_compare ?? null;

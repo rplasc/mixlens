@@ -65,6 +65,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 3 {
+        // The user's own notes on a version.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE versions ADD COLUMN notes TEXT NOT NULL DEFAULT '';
+             PRAGMA user_version = 3;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -91,6 +100,8 @@ pub struct VersionSummary {
     /// Own genre preset id and key; only used for references (other versions use the song's).
     pub genre: Option<String>,
     pub key: Option<MusicalKey>,
+    /// The user's own notes; never exported.
+    pub notes: String,
     pub integrated_lufs: f64,
     pub true_peak_dbtp: f64,
     pub lra_lu: f64,
@@ -140,6 +151,7 @@ pub fn summarize(v: &VersionRow) -> VersionSummary {
         created_at: v.created_at.clone(),
         genre: v.genre.clone(),
         key: v.key,
+        notes: v.notes.clone(),
         integrated_lufs: r.loudness.integrated_lufs,
         true_peak_dbtp: r.loudness.true_peak_dbtp,
         lra_lu: r.loudness.lra_lu,
@@ -222,6 +234,7 @@ pub struct VersionRow {
     pub created_at: String,
     pub genre: Option<String>,
     pub key: Option<MusicalKey>,
+    pub notes: String,
     pub report: Report,
 }
 
@@ -239,10 +252,11 @@ fn row_to_version(r: &rusqlite::Row) -> rusqlite::Result<VersionRow> {
         created_at: r.get(6)?,
         genre: r.get(7)?,
         key: parse_key(r.get(8)?),
+        notes: r.get(9)?,
     })
 }
 
-const VERSION_COLS: &str = "id, project_id, label, path, kind, report_json, created_at, genre, song_key";
+const VERSION_COLS: &str = "id, project_id, label, path, kind, report_json, created_at, genre, song_key, notes";
 
 pub fn get_version(c: &Connection, id: i64) -> rusqlite::Result<Option<VersionRow>> {
     c.query_row(&format!("SELECT {VERSION_COLS} FROM versions WHERE id = ?1"), params![id], row_to_version).optional()
@@ -262,6 +276,10 @@ pub fn update_version(c: &Connection, id: i64, label: &str, kind: Kind, r: &Repo
         params![label, kind_str(kind), json, id],
     )
     .map(|_| ())
+}
+
+pub fn set_version_notes(c: &Connection, id: i64, notes: &str) -> rusqlite::Result<()> {
+    c.execute("UPDATE versions SET notes = ?1 WHERE id = ?2", params![notes, id]).map(|_| ())
 }
 
 pub fn delete_version(c: &Connection, id: i64) -> rusqlite::Result<()> {

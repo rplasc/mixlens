@@ -41,6 +41,70 @@ fn clock(s: f64) -> String {
     format!("{}:{:04.1}", m, s - m * 60.0)
 }
 
+/// The true-peak limit the rules hold a version to: headroom for a mix, the streaming ceiling
+/// for a master (stricter when it's louder than the target). References have none.
+pub fn tp_ceiling(l: &Loudness, t: &Targets) -> Option<f64> {
+    match t.kind {
+        Kind::Mix => Some(-1.0),
+        Kind::Master => Some(if l.integrated_lufs > t.target_lufs + 0.05 { t.loud_ceiling_dbtp } else { t.ceiling_dbtp }),
+        Kind::Reference => None,
+    }
+}
+
+/// Most marks kept per kind; the loudest win.
+const MAX_MARKS: usize = 40;
+
+/// Runs of block indices (sorted), merging runs one block apart. Returns inclusive (first, last).
+fn block_runs(blocks: impl Iterator<Item = usize>) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = vec![];
+    for b in blocks {
+        match runs.last_mut() {
+            Some(r) if b <= r.1 + 2 => r.1 = b,
+            _ => runs.push((b, b)),
+        }
+    }
+    runs
+}
+
+/// Where clipping and true-peak overs are, under the same rules as the findings that report them.
+pub fn peak_marks(r: &Report, t: &Targets) -> Vec<PeakMark> {
+    let l = &r.loudness;
+    let (Some(map), Some(ceiling)) = (&l.peak_map, tp_ceiling(l, t)) else { return vec![] };
+    let tp = &map.tp_blocks;
+    let block = crate::analyze::KBLOCK_S;
+    let peak = |a: usize, b: usize| tp.get(a..=b.min(tp.len().saturating_sub(1))).and_then(|s| s.iter().copied().reduce(f32::max)).map_or(l.true_peak_dbtp, f64::from);
+    let marks = |blocks: Vec<usize>, kind: PeakKind, severity: Severity| {
+        let mut m: Vec<PeakMark> = block_runs(blocks.into_iter())
+            .into_iter()
+            .map(|(a, b)| PeakMark { start_s: a as f64 * block, end_s: (b + 1) as f64 * block, kind, peak_db: peak(a, b), severity })
+            .collect();
+        m.sort_by(|x, y| y.peak_db.total_cmp(&x.peak_db));
+        m.truncate(MAX_MARKS);
+        m
+    };
+    let mut out = marks(map.over_fs_blocks.iter().map(|&b| b as usize).collect(), PeakKind::OverFullScale, Severity::Error);
+    // Same gate as the "clipping" finding: flat tops only matter near full scale.
+    if l.sample_peak_dbfs > -0.5 {
+        out.extend(marks(map.flat_top_blocks.iter().map(|&b| b as usize).collect(), PeakKind::Clipping, Severity::Error));
+    }
+    let over: Vec<usize> = tp.iter().enumerate().filter(|(_, &v)| f64::from(v) > ceiling + 0.05).map(|(i, _)| i).collect();
+    let sev = if t.kind == Kind::Master { Severity::Error } else { Severity::Warn };
+    out.extend(marks(over, PeakKind::TruePeak, sev));
+    out.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
+    out
+}
+
+/// " Loudest at 2:14.3; 7 places in all." for one kind of mark, or "" when none were located.
+fn located(marks: &[PeakMark], kind: PeakKind) -> String {
+    let m: Vec<&PeakMark> = marks.iter().filter(|m| m.kind == kind).collect();
+    let Some(top) = m.iter().max_by(|a, b| a.peak_db.total_cmp(&b.peak_db)) else { return String::new() };
+    match m.len() {
+        1 => format!(" It happens at {}.", clock(top.start_s)),
+        n if n >= MAX_MARKS => format!(" Loudest at {}; at least {n} places in all.", clock(top.start_s)),
+        n => format!(" Loudest at {}; {n} places in all.", clock(top.start_s)),
+    }
+}
+
 pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
     if t.kind == Kind::Reference {
         return vec![f(Severity::Ok, "reference", "Reference track", "Used as a reference: not checked against mix or master rules.")];
@@ -59,7 +123,11 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             Severity::Error,
             "over_full_scale",
             "Samples above 0 dBFS",
-            format!("{} samples exceed full scale. They will clip as soon as this is converted to a fixed-point format.", l.samples_over_full_scale),
+            format!(
+                "{} samples exceed full scale. They will clip as soon as this is converted to a fixed-point format.{}",
+                l.samples_over_full_scale,
+                located(&r.peak_marks, PeakKind::OverFullScale)
+            ),
         ));
     }
     if l.flat_top_runs > 0 && l.sample_peak_dbfs > -0.5 {
@@ -67,7 +135,12 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
             Severity::Error,
             "clipping",
             "Hard clipping",
-            format!("{} runs of 3+ samples pinned at the peak ({:.2} dBFS).", l.flat_top_runs, l.sample_peak_dbfs),
+            format!(
+                "{} runs of 3+ samples pinned at the peak ({:.2} dBFS).{}",
+                l.flat_top_runs,
+                l.sample_peak_dbfs,
+                located(&r.peak_marks, PeakKind::Clipping)
+            ),
         ));
     }
 
@@ -78,7 +151,11 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
                     Severity::Warn,
                     "mix_headroom",
                     "Little headroom for mastering",
-                    format!("True peak is {:.1} dBTP. Leave roughly 3–6 dB so the master has room to work.", l.true_peak_dbtp),
+                    format!(
+                        "True peak is {:.1} dBTP. Leave roughly 3–6 dB so the master has room to work.{}",
+                        l.true_peak_dbtp,
+                        located(&r.peak_marks, PeakKind::TruePeak)
+                    ),
                 ));
             } else {
                 out.push(f(Severity::Ok, "mix_headroom", "Room for mastering", format!("True peak {:.1} dBTP leaves the master room to work.", l.true_peak_dbtp)));
@@ -97,17 +174,18 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
         }
         Kind::Master => {
             let loud = l.integrated_lufs > t.target_lufs + 0.05;
-            let ceiling = if loud { t.loud_ceiling_dbtp } else { t.ceiling_dbtp };
+            let ceiling = tp_ceiling(l, t).unwrap_or(t.ceiling_dbtp);
             if l.true_peak_dbtp > ceiling + 0.05 {
                 out.push(f(
                     Severity::Error,
                     "tp_ceiling",
                     "True peak above streaming ceiling",
                     format!(
-                        "True peak {:.1} dBTP vs a {:.0} dBTP ceiling{}. Expect overs after lossy encoding.",
+                        "True peak {:.1} dBTP vs a {:.0} dBTP ceiling{}. Expect overs after lossy encoding.{}",
                         l.true_peak_dbtp,
                         ceiling,
-                        if loud { " (stricter because the master is louder than the target)" } else { "" }
+                        if loud { " (stricter because the master is louder than the target)" } else { "" },
+                        located(&r.peak_marks, PeakKind::TruePeak)
                     ),
                 ));
             } else {

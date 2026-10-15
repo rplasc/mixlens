@@ -53,6 +53,7 @@ pub fn analyze_file(path: &Path, targets: &Targets) -> Result<(Audio, Report)> {
 pub fn refresh_findings(report: &mut Report, targets: &Targets) {
     report.genre_match = targets.genre.as_ref().map(|g| genre::evaluate(report, g, targets.kind));
     report.key_analysis = targets.key.as_ref().map(|k| key::analyze(report, k));
+    report.peak_marks = findings::peak_marks(report, targets);
     report.findings = findings::evaluate(report, targets);
 }
 
@@ -137,6 +138,38 @@ mod tests {
         assert_eq!(sev(&r), Some(Severity::Info));
         refresh_findings(&mut r, &Targets { key: MusicalKey::parse("E major"), ..Targets::default() });
         assert_eq!(sev(&r), Some(Severity::Warn), "F is out of E major");
+    }
+
+    #[test]
+    fn locates_clipping_and_overs() {
+        let fs = 48000;
+        let mut x = sine(fs, 1000.0, 10.0, 0.25);
+        // Samples above full scale at 5.0–5.1 s.
+        for v in &mut x[fs as usize * 5..fs as usize * 51 / 10] {
+            *v *= 4.8;
+        }
+        let a = audio::from_planar(fs, x.clone(), x, "hot");
+        let mut r = analyze::analyze(&a, &Targets::default()).unwrap();
+        let over: Vec<_> = r.peak_marks.iter().filter(|m| m.kind == report::PeakKind::OverFullScale).collect();
+        assert_eq!(over.len(), 1, "{:?}", r.peak_marks);
+        assert!(over[0].start_s >= 4.9 && over[0].end_s <= 5.2, "{:?}", over[0]);
+        let f = r.findings.iter().find(|f| f.code == "over_full_scale").unwrap();
+        assert!(f.detail.contains("0:05.0"), "{}", f.detail);
+        // The same stretch is over the mix headroom limit, and nowhere else is.
+        let tp: Vec<_> = r.peak_marks.iter().filter(|m| m.kind == report::PeakKind::TruePeak).collect();
+        assert_eq!(tp.len(), 1, "{:?}", r.peak_marks);
+        assert_eq!(tp[0].severity, Severity::Warn);
+        assert!((tp[0].start_s - 5.0).abs() < 0.15, "{:?}", tp[0]);
+
+        // References have no rules, so no markers.
+        refresh_findings(&mut r, &Targets { kind: Kind::Reference, ..Targets::default() });
+        assert!(r.peak_marks.is_empty());
+
+        // Reports from before peak positions were recorded keep their old wording.
+        r.loudness.peak_map = None;
+        refresh_findings(&mut r, &Targets::default());
+        assert!(r.peak_marks.is_empty());
+        assert!(!r.findings.iter().find(|f| f.code == "over_full_scale").unwrap().detail.contains("0:05"));
     }
 
     #[test]

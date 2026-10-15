@@ -63,6 +63,9 @@ pub struct Report {
     /// Tonal peaks interpreted in the song's key (derived; set by `refresh_findings`).
     #[serde(default)]
     pub key_analysis: Option<KeyAnalysis>,
+    /// Where clipping and true-peak overs are, for the current rules (derived; set by `refresh_findings`).
+    #[serde(default)]
+    pub peak_marks: Vec<PeakMark>,
     pub analysis_ms: u64,
     /// K-weighted mean-square energy per 100 ms sub-block (sum of channels).
     /// Lets section loudness be computed later without re-decoding.
@@ -97,6 +100,39 @@ pub struct Loudness {
     /// Short-term loudness every `short_term_hop_s` seconds (value at end of each 3 s window).
     pub short_term: Vec<f32>,
     pub short_term_hop_s: f64,
+    /// Where the peaks are, per 100 ms block. `None` in reports analyzed before it was recorded.
+    #[serde(default)]
+    pub peak_map: Option<PeakMap>,
+}
+
+/// Peak positions in 100 ms blocks (`analyze::KBLOCK_S`), kept so markers can follow the rules.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeakMap {
+    /// True peak per block (dBTP, louder channel).
+    pub tp_blocks: Vec<f32>,
+    /// Blocks holding samples above full scale (capped).
+    pub over_fs_blocks: Vec<u32>,
+    /// Blocks where a flat-top run of 3+ samples starts (capped).
+    pub flat_top_blocks: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PeakKind {
+    OverFullScale,
+    Clipping,
+    TruePeak,
+}
+
+/// A stretch of the song with clipping or true peak over the ceiling.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeakMark {
+    pub start_s: f64,
+    pub end_s: f64,
+    pub kind: PeakKind,
+    /// Highest true peak in the stretch (dBTP).
+    pub peak_db: f64,
+    pub severity: Severity,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -250,6 +286,7 @@ impl Report {
                     l.insert("short_term_every_3s".into(), serde_json::json!(ds));
                 }
                 l.remove("short_term_hop_s");
+                l.remove("peak_map");
             }
         }
         round_floats(&mut v);

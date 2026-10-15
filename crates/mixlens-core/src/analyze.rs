@@ -10,6 +10,8 @@ use std::time::Instant;
 pub const KBLOCK_S: f64 = 0.1;
 const ST_HOP_S: f64 = 0.5;
 const SILENCE_DBFS: f64 = -60.0;
+/// Most blocks of each clipping kind kept in a [`PeakMap`].
+const MAX_CLIP_BLOCKS: usize = 4000;
 
 pub fn analyze(audio: &Audio, targets: &Targets) -> Result<Report> {
     let t0 = Instant::now();
@@ -54,6 +56,7 @@ pub fn analyze(audio: &Audio, targets: &Targets) -> Result<Report> {
         lr_balance_db: levels.balance_db,
         short_term: ebu.short_term,
         short_term_hop_s: ST_HOP_S,
+        peak_map: Some(PeakMap { tp_blocks: ebu.tp_blocks, over_fs_blocks: levels.over_fs_blocks, flat_top_blocks: levels.flat_top_blocks }),
     };
 
     let mut edges = edges;
@@ -72,6 +75,7 @@ pub fn analyze(audio: &Audio, targets: &Targets) -> Result<Report> {
         findings: vec![],
         genre_match: None,
         key_analysis: None,
+        peak_marks: vec![],
         analysis_ms: 0,
         kblocks,
     };
@@ -89,6 +93,8 @@ struct EbuOut {
     max_st: f64,
     max_m: f64,
     short_term: Vec<f32>,
+    /// True peak per 100 ms block (dBTP).
+    tp_blocks: Vec<f32>,
 }
 
 fn finite_or(x: f64, d: f64) -> f64 {
@@ -107,6 +113,7 @@ fn ebu_main(a: &Audio) -> Result<EbuOut> {
     let per_st = (ST_HOP_S / KBLOCK_S).round() as usize;
     let n = a.len();
     let mut st = Vec::with_capacity(n / (hop * per_st) + 1);
+    let mut tp_blocks = Vec::with_capacity(n / hop + 1);
     let (mut max_st, mut max_m) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut i = 0usize;
     let mut k = 0usize;
@@ -114,6 +121,8 @@ fn ebu_main(a: &Audio) -> Result<EbuOut> {
         let end = (i + hop).min(n);
         m.add_frames_planar_f32(&[&a.left[i..end], &a.right[i..end]])
             .map_err(|e| Error::Analysis(format!("ebur128: {e:?}")))?;
+        let tp = m.prev_true_peak(0).unwrap_or(0.0).max(m.prev_true_peak(1).unwrap_or(0.0));
+        tp_blocks.push(amp_db(tp) as f32);
         let mo = m.loudness_momentary().unwrap_or(f64::NEG_INFINITY);
         if mo.is_finite() && end - i == hop {
             max_m = max_m.max(mo);
@@ -138,6 +147,7 @@ fn ebu_main(a: &Audio) -> Result<EbuOut> {
         max_st: finite_or(max_st, -120.0),
         max_m: finite_or(max_m, -120.0),
         short_term: st,
+        tp_blocks,
     })
 }
 
@@ -426,6 +436,8 @@ struct Levels {
     near_fs: u64,
     over_fs: u64,
     flat_runs: u64,
+    over_fs_blocks: Vec<u32>,
+    flat_top_blocks: Vec<u32>,
     dc: [f64; 2],
     balance_db: f64,
 }
@@ -448,20 +460,28 @@ fn edges_and_levels(a: &Audio) -> (Edges, Levels, Option<Dither>, Frames) {
     let near = 10f64.powf(-0.1 / 20.0);
     let flat_thr = pk * 10f64.powf(-0.01 / 20.0);
     let (mut near_fs, mut over_fs, mut flat_runs) = (0u64, 0u64, 0u64);
+    // 100 ms blocks, matching `KBLOCK_S`, so clipping can be located later.
+    let hop = (fs * 0.1) as usize;
+    let (mut over_blocks, mut flat_blocks) = (vec![], vec![]);
     for ch in [l, r] {
         let mut run = 0u32;
-        for &x in ch.iter() {
+        for (i, &x) in ch.iter().enumerate() {
             let ax = x.abs() as f64;
             if ax >= near {
                 near_fs += 1;
             }
             if ax > 1.0 {
                 over_fs += 1;
+                let b = (i / hop) as u32;
+                if over_blocks.last() != Some(&b) {
+                    over_blocks.push(b);
+                }
             }
             if pk > 0.0 && ax >= flat_thr {
                 run += 1;
                 if run == 3 {
                     flat_runs += 1;
+                    flat_blocks.push((i / hop) as u32);
                 }
             } else {
                 run = 0;
@@ -475,7 +495,6 @@ fn edges_and_levels(a: &Audio) -> (Edges, Levels, Option<Dither>, Frames) {
     let (msl, msr) = (dsp::mean_square(l), dsp::mean_square(r));
 
     // 100 ms frames.
-    let hop = (fs * 0.1) as usize;
     let mut rms_db = vec![];
     let mut gated = (0.0f64, 0usize);
     for (cl, cr) in l.chunks(hop).zip(r.chunks(hop)) {
@@ -536,10 +555,20 @@ fn edges_and_levels(a: &Audio) -> (Edges, Levels, Option<Dither>, Frames) {
         near_fs,
         over_fs,
         flat_runs,
+        over_fs_blocks: block_list(over_blocks),
+        flat_top_blocks: block_list(flat_blocks),
         dc,
         balance_db: pow_db(msl) - pow_db(msr),
     };
     (edges, levels, dither, Frames { rms_db })
+}
+
+/// Sorted, de-duplicated block indices, capped.
+fn block_list(mut v: Vec<u32>) -> Vec<u32> {
+    v.sort_unstable();
+    v.dedup();
+    v.truncate(MAX_CLIP_BLOCKS);
+    v
 }
 
 fn dither_check(a: &Audio, rms_db: &[f64], hop: usize) -> Option<Dither> {

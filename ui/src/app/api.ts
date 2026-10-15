@@ -32,6 +32,8 @@ export interface VersionSummary {
   id: number; project_id: number; label: string; file_name: string; path: string; kind: Kind;
   /** A reference's own genre preset id and key; other versions use the song's. */
   genre: string | null; key: MusicalKey | null;
+  /** The user's own notes; kept out of exports. */
+  notes: string;
   created_at: string; integrated_lufs: number; true_peak_dbtp: number; lra_lu: number;
   duration_s: number; sample_rate: number; sample_format: string; worst: Severity;
   errors: number; warnings: number;
@@ -40,6 +42,9 @@ export interface VersionSummary {
 export interface Finding { severity: Severity; code: string; title: string; detail: string }
 export interface BandDev { fc: number; level_db: number; dev_db: number }
 export interface Section { start_s: number; end_s: number; kind: 'silence' | 'quiet' | 'loud'; lufs: number }
+export type PeakKind = 'over_full_scale' | 'clipping' | 'true_peak';
+/** A stretch with clipping or true peak over the ceiling; peak_db is its highest true peak (dBTP). */
+export interface PeakMark { start_s: number; end_s: number; kind: PeakKind; peak_db: number; severity: Severity }
 
 export interface Report {
   schema: number;
@@ -78,10 +83,12 @@ export interface Report {
   findings: Finding[];
   genre_match?: GenreMatch | null;
   key_analysis?: KeyAnalysis | null;
+  peak_marks?: PeakMark[];
   analysis_ms: number;
 }
 
-export interface ReportEnvelope { id: number; label: string; kind: Kind; path: string; report: Report }
+/** peaks_located is false for reports analyzed before peak positions were recorded. */
+export interface ReportEnvelope { id: number; label: string; kind: Kind; path: string; peaks_located: boolean; report: Report }
 
 export interface Comparison {
   a_file: string; b_file: string; resampled: boolean; lag_ms: number; gain_db: number;
@@ -162,8 +169,11 @@ export const api = {
   addVersion: (projectId: number, path: string, kind?: Kind) => call<VersionSummary>('add_version', { projectId, path, kind: kind ?? null, label: null }),
   updateVersion: (id: number, label: string, kind: Kind) => call<VersionSummary>('update_version', { id, label, kind }),
   updateVersionContext: (id: number, genre: string | null, key: MusicalKey | null) => call<VersionSummary>('update_version_context', { id, genre, key }),
+  updateVersionNotes: (id: number, notes: string) => call<VersionSummary>('update_version_notes', { id, notes }),
   deleteVersion: (id: number) => call<void>('delete_version', { id }),
   getReport: (id: number) => call<ReportEnvelope>('get_report', { id }),
+  /** Re-analyzes an older version's file to record where its peaks are. */
+  locatePeaks: (id: number) => call<VersionSummary>('locate_peaks', { id }),
   compare: (a: number, b: number) => call<Comparison>('compare_versions', { a, b }),
   compareReference: (a: number, b: number) => call<ReferenceComparison>('compare_reference', { a, b }),
   section: (id: number, startS: number, endS: number) => call<SectionAnalysis>('section_analysis', { id, startS, endS }),

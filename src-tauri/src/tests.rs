@@ -194,6 +194,8 @@ fn migrates_old_database() {
         let p = &db::list_projects(&c).unwrap()[0];
         assert_eq!(p.name, "Old song");
         assert!(p.genre.is_none() && p.key.is_none());
+        let user_version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(user_version, 3);
     }
     let c = db::open(&path).unwrap();
     let key = mixlens_core::MusicalKey::parse("F#m");
@@ -277,6 +279,50 @@ fn reference_has_own_context() {
     drop(c);
     let out = crate::ai::tools::execute(&inner, "compare_versions", &serde_json::json!({"version_a": 1, "version_b": 2})).unwrap();
     assert_eq!((out["version_key"].as_str(), out["reference_key"].as_str()), (Some("A minor"), Some("G major")));
+}
+
+#[test]
+fn version_notes_reach_the_assistant() {
+    let (inner, _dir) = setup();
+    let c = inner.db.lock().unwrap();
+    assert_eq!(db::get_version(&c, 1).unwrap().unwrap().notes, "", "new versions start without notes");
+    let v = crate::commands::set_version_notes(&c, 1, "  fixed muddy 2:14\n\npulled vocal 1 dB  ").unwrap();
+    assert_eq!(v.notes, "fixed muddy 2:14\n\npulled vocal 1 dB");
+    assert_eq!(db::list_versions(&c, 1).unwrap()[0].notes, v.notes);
+
+    // Notes go on one line in the per-turn context; versions without notes get no notes field.
+    let rows = db::list_versions(&c, 1).unwrap();
+    let ctx = crate::ai::project_context(&Settings::default(), None, &[], &rows, &[]);
+    assert!(ctx.contains(r#"| notes: "fixed muddy 2:14 / pulled vocal 1 dB""#), "{ctx}");
+    assert_eq!(ctx.matches("notes:").count(), 1, "{ctx}");
+    drop(c);
+    let out = crate::ai::tools::execute(&inner, "get_report", &serde_json::json!({"version_id": 1})).unwrap();
+    assert_eq!(out["version"]["notes"], v.notes);
+
+    // Long notes are capped when saved.
+    let long = "x".repeat(5000);
+    assert_eq!(crate::commands::set_version_notes(&inner.db.lock().unwrap(), 1, &long).unwrap().notes.len(), 4000);
+}
+
+#[test]
+fn locates_peaks_for_older_reports() {
+    let (inner, _dir) = setup();
+    {
+        // As stored before peak positions were recorded.
+        let c = inner.db.lock().unwrap();
+        let mut v = db::get_version(&c, 2).unwrap().unwrap();
+        v.report.loudness.peak_map = None;
+        db::update_version(&c, 2, &v.label, v.kind, &v.report).unwrap();
+    }
+    let id = |inner: &Shared| crate::commands::locate_peaks_in(inner, 2).map(|v| v.id);
+    assert_eq!(id(&inner), Ok(2));
+    let v = inner.version(2).unwrap();
+    let map = v.report.loudness.peak_map.as_ref().expect("peak map backfilled and saved");
+    assert!(!map.tp_blocks.is_empty());
+    // Already located: nothing to do, even without the file.
+    std::fs::remove_file(&v.path).unwrap();
+    inner.forget(&[2]);
+    assert_eq!(id(&inner), Ok(2));
 }
 
 #[test]

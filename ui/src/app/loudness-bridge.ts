@@ -1,7 +1,13 @@
 import { Component, computed, input, output, signal } from '@angular/core';
-import { Section } from './api';
+import { PeakKind, PeakMark, Section } from './api';
 import { hostWidth } from './dom';
-import { clock, num } from './fmt';
+import { clock, num, signed, time } from './fmt';
+
+const MARK_LABEL: Record<PeakKind, string> = {
+  over_full_scale: 'Above 0 dBFS',
+  clipping: 'Clipped',
+  true_peak: 'True peak over ceiling',
+};
 
 interface Series { values: number[]; hop: number; color: 'a' | 'b' }
 
@@ -39,6 +45,24 @@ interface Series { values: number[]; hop: number; color: 'a' | 'b' }
       @if (target() !== null && !onTarget()) {
         <line [attr.x1]="left" [attr.x2]="w()" [attr.y1]="y(target()!)" [attr.y2]="y(target()!)" class="target" />
         <text [attr.x]="left + 4" [attr.y]="y(target()!) - 5" class="target-label">Streaming target {{ num(target(), 0) }}</text>
+      }
+      @for (m of markItems(); track $index) {
+        <g class="mark" [attr.data-sev]="m.sev" [class.selected]="selectedMark() === $index" role="button" tabindex="0"
+           [attr.aria-label]="m.name" [attr.aria-pressed]="selectedMark() === $index"
+           (click)="$event.stopPropagation(); markClick.emit($index)"
+           (keydown.enter)="markClick.emit($index)" (keydown.space)="$event.preventDefault(); markClick.emit($index)">
+          <rect [attr.x]="m.x" [attr.y]="top" [attr.width]="m.w" [attr.height]="plotH" class="rule" />
+          <path [attr.d]="m.head" class="head" />
+          <rect [attr.x]="m.cx - 7" [attr.y]="top - 3" width="14" height="16" class="hit" />
+        </g>
+      }
+      @if (pinned(); as p) {
+        <g class="pin" [attr.transform]="'translate(' + p.tx + ',' + (top + plotH - 56) + ')'">
+          <rect [attr.width]="pinW" height="50" rx="4" class="tip" />
+          <text x="8" y="15" class="tip-t">{{ p.time }}</text>
+          <text x="8" y="29" class="tip-v" [attr.data-sev]="p.sev">{{ p.label }}</text>
+          <text x="8" y="44" class="tip-t">{{ p.peak }} dBTP true peak</text>
+        </g>
       }
       @for (t of ticks(); track t.s) {
         <text [attr.x]="t.x" [attr.y]="H - 4" class="axis" text-anchor="middle">{{ t.label }}</text>
@@ -85,6 +109,17 @@ interface Series { values: number[]; hop: number; color: 'a' | 'b' }
     .tip-v { font-size: var(--text-caption); font-weight: 600; }
     .tip-v.a { fill: var(--a); }
     .tip-v.b { fill: var(--b); }
+    .mark { color: var(--err); cursor: pointer; }
+    .mark[data-sev='warn'] { color: var(--warn); }
+    .mark .rule { fill: currentColor; opacity: 0.28; pointer-events: none; }
+    .mark.selected .rule { opacity: 0.75; }
+    .mark .head { fill: currentColor; pointer-events: none; }
+    .mark .hit { fill: transparent; }
+    .mark:focus { outline: none; }
+    .mark:focus-visible .hit { stroke: var(--focus); stroke-width: 2; }
+    .pin { pointer-events: none; }
+    .tip-v[data-sev='error'] { fill: var(--err); }
+    .tip-v[data-sev='warn'] { fill: var(--warn); }
   `,
 })
 export class LoudnessBridge {
@@ -98,6 +133,10 @@ export class LoudnessBridge {
   readonly selected = input<number | null>(null);
   readonly clickable = input<boolean>(false);
   readonly sectionClick = output<number>();
+  /** Clipping and true-peak overs, drawn as markers that can be pinned to read their time. */
+  readonly marks = input<PeakMark[]>([]);
+  readonly selectedMark = input<number | null>(null);
+  readonly markClick = output<number>();
   /** Integrated sits on the target line: draw one line, not two overlapping ones. */
   readonly onTarget = computed(() => {
     const i = this.integrated();
@@ -170,6 +209,36 @@ export class LoudnessBridge {
       name: `Measure ${s.kind} section, ${clock(s.start_s)} to ${clock(s.end_s)}, ${num(s.lufs)} LUFS`,
     })),
   );
+
+  readonly pinW = 176;
+
+  readonly markItems = computed(() =>
+    this.marks().map((m) => {
+      const x = this.x(m.start_s);
+      const w = Math.max(1.5, this.x(m.end_s) - x);
+      const cx = x + w / 2;
+      const t = this.top;
+      // Same shapes as the severity markers: diamond for a problem, triangle for a check.
+      const head = m.severity === 'error' ? `M${cx},${t}l4.5,4.5l-4.5,4.5l-4.5,-4.5z` : `M${cx - 4.5},${t}h9l-4.5,8z`;
+      return { x, w, cx, head, sev: m.severity, name: `${MARK_LABEL[m.kind]} at ${time(m.start_s)}, ${signed(m.peak_db)} dBTP` };
+    }),
+  );
+
+  /** Details of the pinned marker, at the foot of the plot so the hover readout stays clear. */
+  readonly pinned = computed(() => {
+    const i = this.selectedMark();
+    const m = i === null ? undefined : this.marks()[i];
+    const item = i === null ? undefined : this.markItems()[i];
+    if (!m || !item) return null;
+    const long = m.end_s - m.start_s > 0.25;
+    return {
+      tx: Math.min(Math.max(this.left + 4, item.cx - this.pinW / 2), this.w() - this.pinW - 4),
+      time: long ? `${time(m.start_s)} to ${time(m.end_s)}` : time(m.start_s),
+      label: MARK_LABEL[m.kind],
+      peak: signed(m.peak_db),
+      sev: m.severity,
+    };
+  });
 
   readonly paths = computed(() => {
     const series: Series[] = [];
