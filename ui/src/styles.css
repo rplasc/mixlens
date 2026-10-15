@@ -36,6 +36,7 @@
   /* Layering, lowest to highest. The settings dialog uses the browser's top layer. */
   --z-scrim: 10;
   --z-drawer: 11;
+  --z-menu: 20;
   --z-drop: 30;
   --z-toast: 40;
   --radius-s: 4px;

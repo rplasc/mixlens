@@ -175,7 +175,10 @@ export class Overview {
     return `MixLens checked this as a master against ${where} ${num(this.target(), 0)} LUFS target and true-peak ceiling.`;
   });
 
-  /** One-line answer to "is this ready, and what do I fix first?", from the findings. */
+  /**
+   * One-line answer to "is this ready, and what do I fix first?", from the findings.
+   * The exported report has a Rust copy (`export::verdict` in mixlens-core); keep the two in step.
+   */
   readonly verdict = computed(() => {
     const r = this.r();
     const kind = this.store.report()?.kind;

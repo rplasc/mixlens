@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 export type Kind = 'mix' | 'master' | 'reference';
 export type Severity = 'ok' | 'info' | 'warn' | 'error';
 export type Provider = 'anthropic' | 'openai' | 'ollama';
+export type ExportFormat = 'pdf' | 'markdown';
 
 export interface MusicalKey { tonic: number; mode: 'major' | 'minor' }
 export interface Project { id: number; name: string; version_count: number; created_at: string; genre: string | null; key: MusicalKey | null }
@@ -169,6 +170,8 @@ export const api = {
   codecCheck: (id: number) => call<CodecResult[]>('codec_check', { id }),
   listPlatforms: () => call<Platform[]>('list_platforms'),
   streamingReport: (id: number) => call<StreamingReport>('streaming_report', { id }),
+  /** Adds the format's extension if the path lacks it; returns the path written. */
+  exportReport: (id: number, path: string, format: ExportFormat) => call<string>('export_report', { id, path, format }),
   getSettings: () => call<SettingsView>('get_settings'),
   saveSettings: (settings: Settings) => call<SettingsView>('save_settings', { settings }),
   setApiKey: (provider: Provider, key: string) => call<SettingsView>('set_api_key', { provider, key }),

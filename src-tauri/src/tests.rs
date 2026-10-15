@@ -2,6 +2,7 @@
 //! Uses real analysis on generated WAV files, so tool results are genuine.
 
 use crate::ai::{converse, Msg};
+use crate::commands::ExportFormat;
 use crate::db;
 use crate::settings::{Provider, Settings};
 use crate::state::{Inner, Shared};
@@ -343,4 +344,26 @@ fn streaming_check_tool() {
     assert!(s.general.iter().any(|f| f.code == "encode_clipping"));
     inner.forget(&[1]);
     assert!(!inner.streaming(1).unwrap().encoded);
+}
+
+#[test]
+fn exports_report_as_markdown_and_pdf() {
+    let (inner, dir) = setup();
+    let id = db::list_versions(&inner.db.lock().unwrap(), 1).unwrap()[1].id;
+    let export = |name: &str, format| crate::commands::export_report_to(&inner, id, dir.0.join(name).to_str().unwrap(), format);
+
+    // The format decides the contents; a missing or different extension gets the right one added.
+    let md = export("report", ExportFormat::Markdown).unwrap();
+    assert!(md.ends_with("report.md"), "{md}");
+    let md = std::fs::read_to_string(md).unwrap();
+    assert!(md.starts_with("# Test – v2\n"), "{md}");
+    assert!(md.contains("## Verdict") && md.contains("## Streaming") && md.contains("| Spotify |"), "{md}");
+    assert!(export("notes.Markdown", ExportFormat::Markdown).unwrap().ends_with("notes.Markdown"));
+    let pdf = export("report.md", ExportFormat::Pdf).unwrap();
+    assert!(pdf.ends_with("report.md.pdf"), "{pdf}");
+    assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
+    assert!(export("report.PDF", ExportFormat::Pdf).unwrap().ends_with("report.PDF"));
+
+    let err = export("no-such-dir/r.md", ExportFormat::Markdown).unwrap_err();
+    assert!(err.starts_with("Couldn't save the report"), "{err}");
 }

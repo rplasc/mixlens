@@ -47,6 +47,7 @@ fn main() {
             commands::codec_check,
             commands::list_platforms,
             commands::streaming_report,
+            commands::export_report,
             commands::get_settings,
             commands::save_settings,
             commands::set_api_key,

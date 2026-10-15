@@ -8,6 +8,7 @@ pub mod audio;
 pub mod codec;
 pub mod compare;
 pub mod dsp;
+pub mod export;
 pub mod findings;
 pub mod genre;
 pub mod key;
@@ -17,6 +18,7 @@ pub mod tools;
 
 pub use audio::{decode_file, Audio};
 pub use compare::{compare, reference_compare, Comparison, ReferenceComparison};
+pub use export::{ExportContext, ReportDoc};
 pub use genre::{builtin_presets, GenrePreset};
 pub use key::MusicalKey;
 pub use streaming::{builtin_platforms, Platform, StreamingReport};
@@ -32,6 +34,8 @@ pub enum Error {
     Decode(String),
     #[error("analysis: {0}")]
     Analysis(String),
+    #[error("export: {0}")]
+    Export(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

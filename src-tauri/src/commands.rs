@@ -4,7 +4,8 @@ use crate::ai;
 use crate::db::{self, Message, Project, VersionSummary};
 use crate::settings::{self, Provider, Settings, SettingsView};
 use crate::state::{self, err, Shared};
-use mixlens_core::{codec, compare, reference_compare, refresh_findings, tools, GenrePreset, Kind, MusicalKey};
+use mixlens_core::{codec, compare, export, reference_compare, refresh_findings, tools, ExportContext, GenrePreset, Kind, MusicalKey};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -254,6 +255,59 @@ pub fn list_platforms() -> Vec<mixlens_core::Platform> {
 #[tauri::command]
 pub fn streaming_report(state: State<'_, Shared>, id: i64) -> R<mixlens_core::StreamingReport> {
     state.streaming(id)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Pdf,
+    Markdown,
+}
+
+impl ExportFormat {
+    /// Accepted extensions; the first is added when a path has none of them.
+    fn extensions(self) -> &'static [&'static str] {
+        match self {
+            ExportFormat::Pdf => &["pdf"],
+            ExportFormat::Markdown => &["md", "markdown"],
+        }
+    }
+}
+
+/// Write the shareable report for a version as `format`, adding the format's extension if the
+/// path doesn't end in one. Returns the path written.
+pub fn export_report_to(s: &Shared, id: i64, path: &str, format: ExportFormat) -> R<String> {
+    let v = s.version(id)?;
+    let streaming = s.streaming(id)?;
+    let (song, targets) = {
+        let c = s.db.lock().unwrap();
+        let song = db::get_project(&c, v.project_id).map_err(err)?.map_or_else(|| "Untitled song".to_string(), |p| p.name);
+        (song, state::targets_for_row(&c, &v, v.kind))
+    };
+    let ctx = ExportContext {
+        song,
+        version: v.label.clone(),
+        // SQLite datetime: "2026-10-15 09:30:00".
+        analyzed_on: v.created_at.split(' ').next().unwrap_or_default().to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        targets,
+    };
+    let doc = export::build(&ctx, &v.report, &streaming);
+    let bytes = match format {
+        ExportFormat::Pdf => doc.to_pdf().map_err(err)?,
+        ExportFormat::Markdown => doc.to_markdown().into_bytes(),
+    };
+    let exts = format.extensions();
+    let has_ext = Path::new(path).extension().is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)));
+    let path = if has_ext { path.to_string() } else { format!("{path}.{}", exts[0]) };
+    std::fs::write(&path, bytes).map_err(|e| format!("Couldn't save the report to {path} ({e})."))?;
+    Ok(path)
+}
+
+#[tauri::command]
+pub async fn export_report(state: State<'_, Shared>, id: i64, path: String, format: ExportFormat) -> R<String> {
+    let s: Shared = state.inner().clone();
+    blocking(move || export_report_to(&s, id, &path, format)).await
 }
 
 // ---------- settings ----------

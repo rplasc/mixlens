@@ -1,6 +1,6 @@
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import { Kind, MusicalKey } from './api';
+import { ExportFormat, Kind, MusicalKey } from './api';
 import { Assistant } from './assistant';
 import { Compare } from './compare';
 import { Autofocus } from './dom';
@@ -38,6 +38,19 @@ const WIDE = '(min-width: 1000px)';
                   <button [attr.aria-pressed]="v.kind === 'master'" [class.on]="v.kind === 'master'" (click)="setKind('master')">Master</button>
                   <button [attr.aria-pressed]="v.kind === 'reference'" [class.on]="v.kind === 'reference'" (click)="setKind('reference')"
                     title="Someone else's finished track, used for comparisons">Reference</button>
+                </div>
+                <div class="export" #exportMenu (focusout)="exportFocusOut($event)">
+                  <button class="ghost" aria-haspopup="menu" aria-controls="export-menu" [attr.aria-expanded]="exportOpen()"
+                    [disabled]="store.exportState() === 'busy'" (click)="toggleExport()" (keydown)="exportButtonKey($event)">
+                    {{ exportLabel() }}
+                    <svg class="caret" width="8" height="5" viewBox="0 0 8 5" aria-hidden="true"><path d="M0.5 0.5 4 4 7.5 0.5" /></svg>
+                  </button>
+                  @if (exportOpen()) {
+                    <div id="export-menu" role="menu" aria-label="Export report as" (keydown)="exportMenuKey($event)">
+                      <button role="menuitem" tabindex="-1" (click)="exportAs('pdf')">PDF<span>A formatted page to send to a client or label</span></button>
+                      <button role="menuitem" tabindex="-1" (click)="exportAs('markdown')">Markdown<span>Plain text to paste into an email or notes</span></button>
+                    </div>
+                  }
                 </div>
                 <button class="ghost toggle" [class.on]="store.chatOpen()" [attr.aria-pressed]="store.chatOpen()"
                   (click)="store.chatOpen.set(!store.chatOpen())">Assistant</button>
@@ -164,6 +177,16 @@ const WIDE = '(min-width: 1000px)';
     .song { color: var(--muted); font-size: var(--text-caption); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .actions { display: flex; gap: var(--space-xs); align-items: center; flex: none; }
     .toggle { white-space: nowrap; }
+    .export { position: relative; }
+    .export > button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .caret { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+    [role='menu'] { position: absolute; top: calc(100% + 4px); right: 0; z-index: var(--z-menu); width: max-content; max-width: min(300px, 90vw);
+      display: flex; flex-direction: column; padding: 4px; background: var(--raised); border: 1px solid var(--line);
+      border-radius: var(--radius-m); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+    [role='menuitem'] { display: grid; gap: 1px; text-align: left; border: none; border-radius: var(--radius-s); background: transparent; padding: 6px 10px; }
+    [role='menuitem'] span { font-size: var(--text-caption); color: var(--muted); }
+    [role='menuitem']:hover, [role='menuitem']:focus { background: var(--line); }
+    [role='menuitem']:focus-visible { outline-offset: -2px; }
     .toggle.on { color: var(--ink); border-color: var(--line); }
     .name { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: var(--space-s); row-gap: var(--space-2xs); margin-top: var(--space-2xs); }
     .name h1 { font-size: var(--text-heading); cursor: text; min-width: 0; overflow-wrap: anywhere; }
@@ -223,6 +246,9 @@ export class App implements OnInit {
 
   readonly tonics = TONICS;
   readonly key = computed(() => this.store.context().key);
+  readonly exportLabel = computed(() => ({ idle: 'Export report', busy: 'Exporting…', saved: 'Saved' })[this.store.exportState()]);
+  readonly exportOpen = signal(false);
+  private readonly exportMenu = viewChild<ElementRef<HTMLElement>>('exportMenu');
   readonly scope = computed(() => (this.store.context().reference ? 'Reference' : 'Song'));
   readonly songContext = computed(() => {
     const p = this.store.project();
@@ -262,11 +288,55 @@ export class App implements OnInit {
     setTimeout(() => document.querySelector<HTMLElement>('#side-panel button')?.focus());
   }
 
-  /** Close whatever is overlaying the main column: the song drawer, or the assistant when it's a drawer. */
+  private exportItems(): HTMLElement[] {
+    return Array.from(this.exportMenu()?.nativeElement.querySelectorAll<HTMLElement>('[role=menuitem]') ?? []);
+  }
+
+  /** Opening moves focus to the first format, as a menu button should. */
+  toggleExport(focus: 'first' | 'last' = 'first') {
+    this.exportOpen.update((o) => !o);
+    if (this.exportOpen()) setTimeout(() => (focus === 'first' ? this.exportItems()[0] : this.exportItems().at(-1))?.focus());
+  }
+
+  closeExport(refocus: boolean) {
+    this.exportOpen.set(false);
+    if (refocus) this.exportMenu()?.nativeElement.querySelector<HTMLElement>('button')?.focus();
+  }
+
+  exportAs(format: ExportFormat) {
+    this.closeExport(true);
+    void this.store.exportReport(format);
+  }
+
+  exportButtonKey(ev: KeyboardEvent) {
+    if (this.exportOpen() || (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp')) return;
+    ev.preventDefault();
+    this.toggleExport(ev.key === 'ArrowDown' ? 'first' : 'last');
+  }
+
+  /** Arrow keys, Home and End move between formats; Tab leaves and closes the menu. */
+  exportMenuKey(ev: KeyboardEvent) {
+    const items = this.exportItems();
+    const n = items.length;
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    const moves: Record<string, number> = { ArrowDown: i + 1, ArrowUp: i - 1 + n, Home: 0, End: n - 1 };
+    if (!(ev.key in moves)) return;
+    ev.preventDefault();
+    items[moves[ev.key] % n].focus();
+  }
+
+  /** Focus leaving the button and menu (Tab, or a click elsewhere) closes the menu. */
+  exportFocusOut(ev: FocusEvent) {
+    if (!this.exportMenu()?.nativeElement.contains(ev.relatedTarget as Node | null)) this.exportOpen.set(false);
+  }
+
+  /** Close whatever is overlaying the main column: the export menu, the song drawer, or the assistant when it's a drawer. */
   closeOverlays() {
     // Escape in Settings closes only the dialog, which handles it itself.
     if (this.store.showSettings()) return;
-    if (this.store.navOpen()) {
+    if (this.exportOpen()) {
+      this.closeExport(true);
+    } else if (this.store.navOpen()) {
       this.store.navOpen.set(false);
       document.querySelector<HTMLElement>('.nav-toggle')?.focus();
     } else if (this.store.chatOpen() && !matchMedia(WIDE).matches) {

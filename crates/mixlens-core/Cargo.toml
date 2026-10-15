@@ -15,3 +15,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 blake3 = "1.5"
 thiserror = "2"
+genpdf = { version = "0.2.0", optional = true }
+# The version genpdf uses; named directly only for its builtin fonts.
+printpdf = { version = "0.3.4", optional = true }
+
+[features]
+# Native PDF export of the shareable report (`export::ReportDoc::to_pdf`).
+pdf = ["dep:genpdf", "dep:printpdf"]

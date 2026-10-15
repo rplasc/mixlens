@@ -9,7 +9,7 @@ description = "MixLens desktop app"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-mixlens-core = { path = "../crates/mixlens-core" }
+mixlens-core = { path = "../crates/mixlens-core", features = ["pdf"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }

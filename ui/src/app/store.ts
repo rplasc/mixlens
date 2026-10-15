@@ -1,10 +1,16 @@
 import { Injectable, computed, effect, signal } from '@angular/core';
 import {
-  api, ChatMessage, CodecResult, Comparison, errorText, GenrePreset, inTauri, Kind, MusicalKey, Platform, Project,
+  api, ChatMessage, CodecResult, Comparison, errorText, ExportFormat, GenrePreset, inTauri, Kind, MusicalKey, Platform, Project,
   ReferenceComparison, ReportEnvelope, SectionAnalysis, SettingsView, StreamingReport, VersionSummary,
 } from './api';
 
 export type Tab = 'overview' | 'spectrum' | 'stereo' | 'streaming' | 'compare';
+
+/** Save-dialog file type per report format. */
+const EXPORT_TYPES: Record<ExportFormat, { name: string; ext: string }> = {
+  pdf: { name: 'PDF', ext: 'pdf' },
+  markdown: { name: 'Markdown', ext: 'md' },
+};
 
 const TOOL_LABELS: Record<string, string> = {
   get_report: 'Reading the report',
@@ -55,6 +61,7 @@ export class Store {
   readonly analyzing = signal<string[]>([]);
   readonly dragOver = signal(false);
   readonly error = signal<string | null>(null);
+  readonly exportState = signal<'idle' | 'busy' | 'saved'>('idle');
 
   readonly settings = signal<SettingsView | null>(null);
   readonly presets = signal<GenrePreset[]>([]);
@@ -286,6 +293,26 @@ export class Store {
     });
     if (!picked) return;
     await this.addFiles(Array.isArray(picked) ? picked : [picked], kind);
+  }
+
+  /** Save the shareable report in the given format. */
+  async exportReport(format: ExportFormat) {
+    const v = this.version();
+    if (!v || !inTauri() || this.exportState() === 'busy') return;
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const type = EXPORT_TYPES[format];
+    const name = `${this.project()?.name ?? 'Song'} – ${v.label} report`.replace(/[\\/:*?"<>|]+/g, '-');
+    const path = await save({ defaultPath: `${name}.${type.ext}`, filters: [{ name: type.name, extensions: [type.ext] }] });
+    if (!path) return;
+    this.exportState.set('busy');
+    try {
+      await api.exportReport(v.id, path, format);
+      this.exportState.set('saved');
+      setTimeout(() => this.exportState.set('idle'), 1600);
+    } catch (e) {
+      this.exportState.set('idle');
+      this.fail(e);
+    }
   }
 
   async addFiles(paths: string[], kind?: Kind) {
