@@ -47,8 +47,8 @@ const WIDE = '(min-width: 1000px)';
                   </button>
                   @if (exportOpen()) {
                     <div id="export-menu" role="menu" aria-label="Export report as" (keydown)="exportMenuKey($event)">
-                      <button role="menuitem" tabindex="-1" (click)="exportAs('pdf')">PDF<span>A formatted page to send to a client or label</span></button>
-                      <button role="menuitem" tabindex="-1" (click)="exportAs('markdown')">Markdown<span>Plain text to paste into an email or notes</span></button>
+                      <button role="menuitem" tabindex="-1" (click)="exportAs('pdf')" (mouseenter)="$any($event.target).focus()">PDF<span>A formatted page to send to a client or label</span></button>
+                      <button role="menuitem" tabindex="-1" (click)="exportAs('markdown')" (mouseenter)="$any($event.target).focus()">Markdown<span>Plain text to paste into an email or notes</span></button>
                     </div>
                   }
                 </div>
@@ -185,7 +185,8 @@ const WIDE = '(min-width: 1000px)';
       border-radius: var(--radius-m); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
     [role='menuitem'] { display: grid; gap: 1px; text-align: left; border: none; border-radius: var(--radius-s); background: transparent; padding: 6px 10px; }
     [role='menuitem'] span { font-size: var(--text-caption); color: var(--muted); }
-    [role='menuitem']:hover, [role='menuitem']:focus { background: var(--line); }
+    /* Focus follows the pointer (mouseenter), so the focused item is the one highlight, from mouse or keys. */
+    [role='menuitem']:focus { background: var(--line); }
     [role='menuitem']:focus-visible { outline-offset: -2px; }
     .toggle.on { color: var(--ink); border-color: var(--line); }
     .name { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: var(--space-s); row-gap: var(--space-2xs); margin-top: var(--space-2xs); }
