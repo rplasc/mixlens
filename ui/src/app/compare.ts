@@ -5,6 +5,7 @@ import { hostWidth } from './dom';
 import { clock, hz, num, signed } from './fmt';
 import { LoudnessBridge } from './loudness-bridge';
 import { Store } from './store';
+import { Trend } from './trend';
 
 /** Per-window null-test strip aligned with the loudness timeline's x axis. */
 @Component({
@@ -40,10 +41,16 @@ export class DiffStrip {
 
 @Component({
   selector: 'ml-compare',
-  imports: [FormsModule, LoudnessBridge, DiffStrip, BandChart],
+  imports: [FormsModule, LoudnessBridge, DiffStrip, BandChart, Trend],
   template: `
     @if (store.otherVersions().length) {
-    <div class="picker">
+    @if (trendShown()) {
+      <section>
+        <h2>All versions</h2>
+        <ml-trend />
+      </section>
+    }
+    <div class="picker" [class.split]="trendShown()">
       <label>
         <span class="muted">Compare</span>
         <strong class="a">{{ store.version()?.label }}</strong>
@@ -205,6 +212,7 @@ export class DiffStrip {
   styles: `
     :host { display: flex; flex-direction: column; gap: 22px; }
     .picker { display: flex; align-items: center; gap: 14px; }
+    .picker.split { border-top: 1px solid var(--line-soft); padding-top: 22px; }
     .first { max-width: 60ch; display: flex; flex-direction: column; gap: var(--space-xs); }
     .first-actions { display: flex; gap: var(--space-xs); margin-top: var(--space-xs); }
     .picker label { display: flex; align-items: center; gap: 8px; }
@@ -234,6 +242,8 @@ export class Compare {
   readonly hz = hz;
   readonly bounces = computed(() => this.store.otherVersions().filter((v) => v.kind !== 'reference'));
   readonly refs = computed(() => this.store.otherVersions().filter((v) => v.kind === 'reference'));
+  /** With two bounces, the pairwise view below already shows the whole story. */
+  readonly trendShown = computed(() => this.store.mixVersions().length >= 3);
 
   label(id: number) {
     return this.store.versions().find((v) => v.id === id)?.label ?? '';

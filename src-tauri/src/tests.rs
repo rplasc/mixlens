@@ -305,6 +305,19 @@ fn version_notes_reach_the_assistant() {
 }
 
 #[test]
+fn summary_carries_trend_metrics() {
+    let (inner, _dir) = setup();
+    let c = inner.db.lock().unwrap();
+    for v in db::list_versions(&c, 1).unwrap() {
+        let s = db::summarize(&v);
+        assert_eq!(s.plr_db, v.report.loudness.plr_db);
+        assert_eq!(s.correlation, v.report.stereo.correlation);
+        // Both channels carry the same sine.
+        assert!(s.correlation > 0.99, "{}", s.correlation);
+    }
+}
+
+#[test]
 fn locates_peaks_for_older_reports() {
     let (inner, _dir) = setup();
     {

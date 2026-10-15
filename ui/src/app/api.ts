@@ -34,7 +34,7 @@ export interface VersionSummary {
   genre: string | null; key: MusicalKey | null;
   /** The user's own notes; kept out of exports. */
   notes: string;
-  created_at: string; integrated_lufs: number; true_peak_dbtp: number; lra_lu: number;
+  created_at: string; integrated_lufs: number; true_peak_dbtp: number; lra_lu: number; plr_db: number; correlation: number;
   duration_s: number; sample_rate: number; sample_format: string; worst: Severity;
   errors: number; warnings: number;
 }
