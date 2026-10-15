@@ -156,6 +156,10 @@ export class Settings implements OnInit, AfterViewInit {
       const { has_anthropic_key, has_openai_key, ffmpeg_found, keyring_ok, effective_target_lufs, ...rest } = s;
       this.form.set({ ...rest });
     }
+    // Opened from a provider choice in the assistant panel: start on that provider.
+    const picked = this.store.setupProvider();
+    this.store.setupProvider.set(null);
+    if (picked && picked !== this.form()?.provider) void this.setProvider(picked);
   }
 
   readonly hasKey = computed(() => {

@@ -355,7 +355,7 @@ fn general(r: &Report, kind: Kind, encoded: Option<&[CodecResult]>) -> Vec<Findi
                 Severity::Ok,
                 "no_clipping",
                 "No clipping",
-                if encoded.is_some() { "Nothing goes over full scale, before or after encoding." } else { "Nothing goes over full scale. Run the encode check to test lossy streams too." },
+                if encoded.is_some() { "Nothing goes over full scale, before or after encoding." } else { "Nothing goes over full scale before encoding." },
             ));
         }
     }

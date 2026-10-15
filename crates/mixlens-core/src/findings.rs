@@ -274,15 +274,30 @@ pub fn evaluate(r: &Report, t: &Targets) -> Vec<Finding> {
     } else if e.trailing_silence_s > 4.0 {
         out.push(f(Severity::Info, "trailing_silence", "Silence at the end", format!("{:.1} s after the last sound.", e.trailing_silence_s)));
     }
-    if e.tail_truncated {
+    // Above -60 dBFS (the level that counts as sound) the ending audibly stops; below it, only a faint tail is cut.
+    if e.tail_truncated && e.tail_last50ms_dbfs > -60.0 {
         out.push(f(
             Severity::Warn,
             "tail_truncated",
-            "File ends before the sound does",
+            "Sound cuts off at the end",
             format!(
-                "The last 50 ms still peak at {:.0} dBFS. Extend the bounce range so the tail decays to silence{}.",
+                "The last 50 ms still peak at {:.0} dBFS, so the ending stops abruptly. Extend the bounce range until the tail decays to silence.",
+                e.tail_last50ms_dbfs
+            ),
+        ));
+    } else if e.tail_truncated {
+        out.push(f(
+            Severity::Info,
+            "tail_truncated",
+            "Quiet tail cut off at the end",
+            format!(
+                "The last 50 ms peak at {:.0} dBFS: very quiet, but not silent. {}",
                 e.tail_last50ms_dbfs,
-                if t.kind == Kind::Master { "" } else { "; mastering gain will raise it" }
+                if t.kind == Kind::Master {
+                    "A short fade at the very end rules out a click."
+                } else {
+                    "Mastering gain will raise it, so bounce a second longer and let it fade out."
+                }
             ),
         ));
     }

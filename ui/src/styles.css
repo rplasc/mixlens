@@ -13,16 +13,19 @@
   --muted: #95a1ab;
   /* Lowest-emphasis text. 5.1:1 on --bg, 4.6:1 on --panel; use --muted on --raised. */
   --faint: #86929d;
+  /* Each hue has one job. Gold: this version (its traces and readings) and the one primary action.
+     Cyan: the other version or reference it is compared with. ok/warn/err: severity only. */
   --a: #e9c46a;
   --b: #7cc8d8;
   --ok: #84c98b;
-  --warn: #f0a04b;
+  /* Orange, kept clear of gold (hue 52 vs 87 in OKLCH); its triangle marker carries it without colour. */
+  --warn: #f38c48;
   --err: #e8665f;
   --info: #9db4c8;
-  /* Diverging pair for volume changes (validated for the dark panel surface). */
-  --gain-up: #b88923;
-  --gain-down: #1896ad;
-  --focus: #e9c46a;
+  /* Volume change on a platform: this version, so gold; the side of 0 dB shows the direction. 4.6:1 on --panel. */
+  --gain: #b88923;
+  /* Cool near-white, so a focus ring never reads as gold (this version) or a severity. */
+  --focus: #cbdae2;
   /* Spacing scale: tight inside groups, generous between them. */
   --space-2xs: 4px;
   --space-xs: 8px;

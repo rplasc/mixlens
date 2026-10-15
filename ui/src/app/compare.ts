@@ -31,8 +31,9 @@ export class DiffStrip {
     const px = (t: number) => this.left + (t / span) * (this.w() - this.left);
     return this.windows().map((d, i) => {
       const t0 = i * this.windowS();
-      const mix = Math.round((0.25 + ((d + 60) / 40) * 0.35) * 100);
-      const fill = d <= -60 ? 'var(--line-soft)' : d <= -20 ? `color-mix(in srgb, var(--b) ${mix}%, transparent)` : d <= -6 ? 'var(--warn)' : 'var(--err)';
+      // One neutral ramp, brighter as the difference grows: a change between bounces isn't a problem, so no severity colours.
+      const mix = Math.round(20 + Math.min(1, (d + 60) / 60) * 75);
+      const fill = d <= -60 ? 'var(--line-soft)' : `color-mix(in oklab, var(--ink) ${mix}%, var(--line-soft))`;
       const label = d <= -100 ? 'identical (silence)' : d <= -60 ? `identical (${num(d, 0)} dB)` : `${num(d)} dB difference`;
       return { x: px(t0), w: Math.max(1, px(t0 + this.windowS()) - px(t0) - 0.5), fill, title: `${clock(t0)}: ${label}` };
     });
@@ -46,7 +47,10 @@ export class DiffStrip {
     @if (store.otherVersions().length) {
     @if (trendShown()) {
       <section>
-        <h2>All versions</h2>
+        <div class="head">
+          <h2>All versions</h2>
+          <p class="muted">Select one to compare it with {{ store.version()?.label }}.</p>
+        </div>
         <ml-trend />
       </section>
     }
@@ -67,6 +71,9 @@ export class DiffStrip {
       <button class="primary" (click)="store.runCompare()" [disabled]="store.comparing() || store.compareWith() === null">
         {{ store.comparing() ? 'Comparing…' : 'Compare' }}
       </button>
+      <p class="muted status" role="status">
+        @if (store.comparing()) { {{ store.comparingReference() ? 'Comparing with the reference…' : 'Aligning the files and running the null test…' }} }
+      </p>
     </div>
 
     }
@@ -81,7 +88,7 @@ export class DiffStrip {
         </div>
       </div>
     } @else if (store.comparing()) {
-      <p class="empty">{{ store.comparingReference() ? 'Comparing with the reference…' : 'Aligning the files and running the null test…' }}</p>
+      <!-- Progress is announced beside the Compare button. -->
     } @else if (rc(); as rc) {
       <p class="verdict">{{ refVerdict() }}</p>
 
@@ -138,7 +145,7 @@ export class DiffStrip {
             [hop]="cur()!.loudness.short_term_hop_s" [sections]="cur()!.sections" [duration]="span()" />
         }
         <ml-diff-strip [windows]="c.windows" [windowS]="c.window_s" [duration]="span()" />
-        <p class="faint small">Gray: identical. Blue: small differences (often time-varying plugins). Orange and red: changed audio.</p>
+        <p class="faint small">Dark: identical. The brighter a stretch, the more the audio changed; faint differences are often time-varying plugins.</p>
       </section>
 
       <div class="cols">
@@ -210,21 +217,25 @@ export class DiffStrip {
     }
   `,
   styles: `
-    :host { display: flex; flex-direction: column; gap: 22px; }
-    .picker { display: flex; align-items: center; gap: 14px; }
-    .picker.split { border-top: 1px solid var(--line-soft); padding-top: 22px; }
+    :host { display: flex; flex-direction: column; gap: var(--space-l); }
+    .head { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: var(--space-s); margin-bottom: var(--space-xs); }
+    .head h2 { margin: 0; }
+    .head p { font-size: var(--text-caption); }
+    .picker { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-s); }
+    /* The version history above, the pairwise comparison below. */
+    .picker.split { border-top: 1px solid var(--line-soft); margin-top: var(--space-s); padding-top: var(--space-l); }
+    .picker .status { font-size: var(--text-caption); }
     .first { max-width: 60ch; display: flex; flex-direction: column; gap: var(--space-xs); }
     .first-actions { display: flex; gap: var(--space-xs); margin-top: var(--space-xs); }
-    .picker label { display: flex; align-items: center; gap: 8px; }
-    .empty { color: var(--muted); padding: 30px 0; }
+    .picker label { display: flex; align-items: center; gap: var(--space-xs); }
     .verdict { font-size: var(--text-subhead); max-width: 80ch; }
-    .legend { display: flex; gap: 18px; font-size: var(--text-caption); margin-bottom: 4px; }
+    .legend { display: flex; gap: var(--space-m); font-size: var(--text-caption); margin-bottom: var(--space-2xs); }
     .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
     .sw.a { background: var(--a); }
     .sw.b { background: var(--b); }
     .small { font-size: var(--text-caption); }
-    h2 { margin-bottom: 6px; }
-    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+    h2 { margin-bottom: var(--space-xs); }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-xl); }
     .regions .oct { font-size: var(--text-caption); }
     @container (max-width: 819px) { .cols { grid-template-columns: 1fr; } }
   `,

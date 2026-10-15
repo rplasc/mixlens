@@ -1,7 +1,7 @@
 import { Injectable, computed, effect, signal } from '@angular/core';
 import {
   api, ChatMessage, CodecResult, Comparison, errorText, ExportFormat, GenrePreset, inTauri, Kind, MusicalKey, Platform, Project,
-  ReferenceComparison, ReportEnvelope, SectionAnalysis, SettingsView, StreamingReport, VersionSummary,
+  Provider, ReferenceComparison, ReportEnvelope, SectionAnalysis, SettingsView, StreamingReport, VersionSummary,
 } from './api';
 
 export type Tab = 'overview' | 'spectrum' | 'stereo' | 'streaming' | 'compare';
@@ -68,6 +68,13 @@ export class Store {
   readonly settings = signal<SettingsView | null>(null);
   readonly presets = signal<GenrePreset[]>([]);
   readonly showSettings = signal(false);
+  /** Provider picked in the assistant panel; Settings opens on it, then clears it. */
+  readonly setupProvider = signal<Provider | null>(null);
+
+  setUpAssistant(provider: Provider) {
+    this.setupProvider.set(provider);
+    this.showSettings.set(true);
+  }
 
   readonly chat = signal<ChatMessage[]>([]);
   readonly chatBusy = signal(false);

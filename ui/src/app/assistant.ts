@@ -1,5 +1,6 @@
 import { AfterViewChecked, Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { marked } from 'marked';
+import { Provider } from './api';
 import { Store } from './store';
 
 marked.setOptions({ gfm: true, breaks: false });
@@ -9,7 +10,9 @@ marked.setOptions({ gfm: true, breaks: false });
   template: `
     <header>
       <h2>Assistant</h2>
-      <button class="ghost model" (click)="store.showSettings.set(true)" [title]="'Change in Settings'">{{ modelLabel() }}</button>
+      @if (!needsSetup()) {
+        <button class="ghost model" (click)="store.showSettings.set(true)" [title]="'Change in Settings'">{{ modelLabel() }}</button>
+      }
       @if (store.chat().length) {
         <button class="ghost" (click)="store.clearChat()" [disabled]="store.chatBusy()">Clear</button>
       }
@@ -17,18 +20,26 @@ marked.setOptions({ gfm: true, breaks: false });
     </header>
 
     <div class="log" #log>
-      @if (!store.chat().length) {
+      @if (needsSetup() && !store.chat().length) {
+        <!-- First use: show what it answers and how to connect it, with nothing on screen that can't be used yet. -->
+        <div class="intro">
+          <p>Ask about this song in plain words. The assistant reads MixLens's measurements, never your audio, and runs extra checks when it needs them.</p>
+          <ul class="examples" aria-label="Example questions">
+            @for (s of suggestions(); track s) { <li>“{{ s }}”</li> }
+          </ul>
+          <h3 id="connect">Connect a provider to start</h3>
+          <ul class="choices" aria-labelledby="connect">
+            @for (c of choices; track c.id) {
+              <li><button class="choice" (click)="store.setUpAssistant(c.id)"><strong>{{ c.name }}</strong><span>{{ c.note }}</span></button></li>
+            }
+          </ul>
+        </div>
+      } @else if (!store.chat().length) {
         <div class="intro">
           <p>Ask about any version of this song. The assistant reads MixLens's measurements, never your audio, and runs extra checks when it needs them.</p>
-          @if (needsSetup()) {
-            <div class="setup">
-              <p>Connect a provider to start: an Anthropic or OpenAI API key, or Ollama running on this computer.</p>
-              <button class="primary" (click)="store.showSettings.set(true)">Set up the assistant</button>
-            </div>
-          }
           <div class="suggest">
             @for (s of suggestions(); track s) {
-              <button (click)="ask(s)" [disabled]="needsSetup() || !store.versions().length || store.chatBusy()">{{ s }}</button>
+              <button (click)="ask(s)" [disabled]="!store.versions().length || store.chatBusy()">{{ s }}</button>
             }
           </div>
         </div>
@@ -44,11 +55,13 @@ marked.setOptions({ gfm: true, breaks: false });
       }
     </div>
 
-    <form (submit)="submit($event)">
-      <textarea #box rows="3" aria-label="Question for the assistant" [value]="draft()" (input)="draft.set(box.value)" (keydown)="key($event)"
-        [disabled]="!store.projectId() || needsSetup()" [placeholder]="needsSetup() ? 'Set up the assistant to ask questions' : 'Ask about this mix or master'"></textarea>
-      <button class="primary" type="submit" [disabled]="!draft().trim() || store.chatBusy() || !store.projectId()">Send</button>
-    </form>
+    @if (!needsSetup()) {
+      <form (submit)="submit($event)">
+        <textarea #box rows="3" aria-label="Question for the assistant" [value]="draft()" (input)="draft.set(box.value)" (keydown)="key($event)"
+          [disabled]="!store.projectId()" placeholder="Ask about this mix or master"></textarea>
+        <button class="primary" type="submit" [disabled]="!draft().trim() || store.chatBusy() || !store.projectId()">Send</button>
+      </form>
+    }
   `,
   styles: `
     :host { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -57,8 +70,16 @@ marked.setOptions({ gfm: true, breaks: false });
     .model { font-size: var(--text-caption); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .log { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
     .intro p { color: var(--muted); margin-bottom: var(--space-s); }
-    .setup { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); margin-bottom: var(--space-m); }
-    .setup p { color: var(--ink) !important; margin: 0 !important; }
+    .examples { list-style: none; margin: 0 0 var(--space-l); padding: 0 0 0 var(--space-s); border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: var(--space-2xs); }
+    .examples li { color: var(--ink); }
+    .intro h3 { margin-bottom: var(--space-xs); }
+    .choices { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line-soft); }
+    .choices li { border-bottom: 1px solid var(--line-soft); }
+    .choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left;
+      background: transparent; border: none; border-radius: 0; padding: var(--space-xs) var(--space-2xs); min-height: 0; }
+    .choice:hover:not(:disabled) { background: var(--raised); }
+    .choice strong { font-weight: 600; }
+    .choice span { color: var(--muted); font-size: var(--text-caption); }
     .suggest { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
     .suggest button { text-align: left; background: transparent; }
     .msg { max-width: 100%; }
@@ -79,10 +100,16 @@ export class Assistant implements AfterViewChecked {
 
   readonly needsSetup = computed(() => !!this.store.settings() && !this.store.assistantReady());
 
+  /** What each provider asks of the producer, in one line. */
+  readonly choices: { id: Provider; name: string; note: string }[] = [
+    { id: 'anthropic', name: 'Anthropic', note: 'Paste an API key. Usage is billed to your Anthropic account.' },
+    { id: 'openai', name: 'OpenAI', note: 'Paste an API key. Usage is billed to your OpenAI account.' },
+    { id: 'ollama', name: 'Ollama', note: 'Runs offline on this computer, with no key. Needs Ollama installed.' },
+  ];
+
   readonly modelLabel = computed(() => {
     const s = this.store.settings();
     if (!s) return '';
-    if (this.needsSetup()) return 'Not set up';
     const m = s.provider === 'anthropic' ? s.anthropic_model : s.provider === 'openai' ? s.openai_model : s.ollama_model;
     return m || 'Choose a model';
   });

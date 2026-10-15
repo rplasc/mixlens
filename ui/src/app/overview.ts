@@ -128,8 +128,8 @@ const NOTES_DELAY_MS = 800;
           <table class="data">
             <tbody>
               <tr><td class="muted">First sound</td><td>{{ time(r.edges.first_sound_s) }}</td></tr>
-              <tr><td class="muted">Last sound</td><td>{{ time(r.edges.last_sound_s) }}{{ r.edges.ends_on_silence
-                ? ', then ' + num(r.edges.trailing_silence_s) + ' s of silence' : ', still sounding when the file ends' }}</td></tr>
+              <tr><td class="muted" title="The last moment above −60 dBFS">Last sound</td><td>{{ time(r.edges.last_sound_s) }}</td></tr>
+              <tr><td class="muted">File ends</td><td>{{ time(r.file.duration_s) }}, {{ ending() }}</td></tr>
               <tr><td class="muted">Fade-out</td><td>{{ r.edges.fade_out_detected ? 'Yes' : 'No' }}</td></tr>
               <tr><td class="muted">Sample peak</td><td>L {{ num(r.loudness.sample_peak_l_dbfs, 2) }}, R {{ num(r.loudness.sample_peak_r_dbfs, 2) }} dBFS</td></tr>
               <tr><td class="muted">Crest factor</td><td>{{ num(r.loudness.crest_db) }} dB</td></tr>
@@ -190,6 +190,15 @@ export class Overview implements OnDestroy {
   readonly time = time;
   readonly prose = prose;
   readonly r = computed(() => this.store.report()?.report ?? null);
+
+  /** How the file ends, in the tail finding's terms: silence, a faint tail, or sound still playing (above -60 dBFS). */
+  readonly ending = computed(() => {
+    const e = this.r()?.edges;
+    if (!e) return '';
+    if (e.ends_on_silence) return `after ${num(e.trailing_silence_s)} s of silence`;
+    const db = num(e.tail_last50ms_dbfs, 0);
+    return e.tail_last50ms_dbfs > -60 ? `cut off while still playing (${db} dBFS)` : `with a faint tail still at ${db} dBFS`;
+  });
   /** Findings that need reading; passed checks collapse into one line. */
   readonly issues = computed(() => this.r()?.findings.filter((f) => f.severity !== 'ok') ?? []);
   readonly passed = computed(() => this.r()?.findings.filter((f) => f.severity === 'ok').map((f) => prose(f.title)) ?? []);
