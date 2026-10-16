@@ -35,6 +35,8 @@ export async function mockInvoke(cmd: string, args: Record<string, any>): Promis
       return v ?? null;
     }
     case 'locate_peaks': return null;
+    // The player needs decoded audio from the desktop app.
+    case 'playback_audio': return null;
     case 'list_platforms': return d.platforms ?? [];
     case 'streaming_report': return d.streaming ?? null;
     case 'compare_reference': return d.reference_compare ?? null;

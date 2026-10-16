@@ -15,7 +15,7 @@ interface Series { values: number[]; color: 'a' | 'b' }
 @Component({
   selector: 'ml-loudness-bridge',
   template: `
-    <svg [attr.width]="w()" [attr.height]="H" (mousemove)="move($event)" (mouseleave)="hover.set(null)" [attr.role]="clickable() ? 'group' : 'img'"
+    <svg [attr.width]="w()" [attr.height]="H" (mousemove)="move($event)" (mouseleave)="hover.set(null)" (click)="seekTo($event)" [class.seekable]="seekable()" [attr.data-focus]="focus()" [attr.role]="clickable() ? 'group' : 'img'"
          [attr.aria-label]="ariaLabel()">
       @for (s of sectionRects(); track $index) {
         <g class="sec" [class.selected]="selected() === $index" [class.clickable]="clickable()" (click)="pick($index)"
@@ -67,6 +67,9 @@ interface Series { values: number[]; color: 'a' | 'b' }
       @for (t of ticks(); track t.s) {
         <text [attr.x]="t.x" [attr.y]="H - 4" class="axis" text-anchor="middle">{{ t.label }}</text>
       }
+      @if (playhead(); as ph) {
+        <line [attr.x1]="playheadX()" [attr.x2]="playheadX()" [attr.y1]="top" [attr.y2]="top + plotH" [attr.class]="'playhead ' + ph.side + (ph.live ? '' : ' idle')" />
+      }
       @if (hover(); as h) {
         <line [attr.x1]="h.x" [attr.x2]="h.x" [attr.y1]="top" [attr.y2]="top + plotH" class="cursor" />
         <g [attr.transform]="'translate(' + (h.x > w() - 150 ? h.x - 142 : h.x + 8) + ',' + (top + 6) + ')'">
@@ -104,6 +107,16 @@ interface Series { values: number[]; color: 'a' | 'b' }
     .target { stroke: var(--ok); stroke-dasharray: 2 4; opacity: 0.8; }
     .target-label { fill: var(--ok); font-size: var(--text-caption); }
     .cursor { stroke: var(--ink); opacity: 0.4; }
+    .seekable { cursor: pointer; }
+    .playhead { stroke-width: 1.5; pointer-events: none; }
+    .playhead.a { stroke: var(--a); }
+    .playhead.b { stroke: var(--b); }
+    .playhead.idle { opacity: 0.5; }
+    /* While A/B playing, the side you can't hear steps back, so eye and ear agree. */
+    .area, .trace { transition: opacity 120ms cubic-bezier(0.25, 1, 0.5, 1); }
+    svg[data-focus='a'] .area.b, svg[data-focus='a'] .trace.b,
+    svg[data-focus='b'] .area.a, svg[data-focus='b'] .trace.a { opacity: 0.35; }
+    @media (prefers-reduced-motion: reduce) { .area, .trace { transition: none; } }
     .tip { fill: var(--raised); stroke: var(--line); }
     .tip-t { fill: var(--muted); font-size: var(--text-caption); }
     .tip-v { font-size: var(--text-caption); font-weight: 600; }
@@ -137,6 +150,12 @@ export class LoudnessBridge {
   readonly marks = input<PeakMark[]>([]);
   readonly selectedMark = input<number | null>(null);
   readonly markClick = output<number>();
+  /** The A/B player's position (s), drawn in the audible side's colour, faint while stopped; clicking the plot asks to play from there. */
+  readonly playhead = input<{ t: number; side: 'a' | 'b'; live: boolean } | null>(null);
+  /** The series being heard; the other is dimmed. */
+  readonly focus = input<'a' | 'b' | null>(null);
+  readonly seekable = input<boolean>(false);
+  readonly seek = output<number>();
   /** Integrated sits on the target line: draw one line, not two overlapping ones. */
   readonly onTarget = computed(() => {
     const i = this.integrated();
@@ -245,6 +264,8 @@ export class LoudnessBridge {
     const cmp = this.compareValues();
     if (cmp) series.push({ values: cmp, color: 'b' });
     series.push({ values: this.values(), color: 'a' });
+    // The series being heard draws on top.
+    if (this.focus() === 'b') series.reverse();
     const base = this.top + this.plotH;
     return series.map((s) => {
       const pts = s.values.map((v, i) => `${this.x(this.t(i)).toFixed(1)},${this.y(v).toFixed(1)}`);
@@ -265,6 +286,18 @@ export class LoudnessBridge {
     const cmp = this.compareValues();
     const fmt = (v: number | undefined) => (v === undefined || v <= -100 ? 'silent' : `${num(v)} LUFS`);
     this.hover.set({ x: px, time: clock(t), a: fmt(vals[i]), b: cmp ? fmt(cmp[i]) : null });
+  }
+
+  readonly playheadX = computed(() => {
+    const p = this.playhead();
+    return p === null ? 0 : this.x(Math.min(p.t, this.span()));
+  });
+
+  seekTo(ev: MouseEvent) {
+    if (!this.seekable()) return;
+    const rect = (ev.currentTarget as SVGElement).getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    if (px >= this.left) this.seek.emit(((px - this.left) / (this.w() - this.left)) * this.span());
   }
 
   pick(i: number) {

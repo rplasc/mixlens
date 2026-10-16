@@ -4,7 +4,7 @@ use crate::ai;
 use crate::db::{self, Message, Project, VersionSummary};
 use crate::settings::{self, Provider, Settings, SettingsView};
 use crate::state::{self, err, Shared};
-use mixlens_core::{codec, compare, export, reference_compare, refresh_findings, tools, ExportContext, GenrePreset, Kind, MusicalKey};
+use mixlens_core::{codec, compare, export, reference_compare, refresh_findings, tools, Audio, ExportContext, GenrePreset, Kind, MusicalKey};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -268,6 +268,28 @@ pub async fn compare_reference(state: State<'_, Shared>, a: i64, b: i64) -> R<Va
         v["version_id"] = json!(version.id);
         v["reference_id"] = json!(reference.id);
         Ok(v)
+    })
+    .await
+}
+
+/// Decoded audio for the A/B player: sample rate and frame count (u32 LE), then the left
+/// channel and the right channel as f32 LE.
+pub fn pcm_bytes(a: &Audio) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + a.len() * 8);
+    out.extend_from_slice(&a.sample_rate.to_le_bytes());
+    out.extend_from_slice(&(a.len() as u32).to_le_bytes());
+    for x in a.left.iter().chain(&a.right) {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out
+}
+
+#[tauri::command]
+pub async fn playback_audio(state: State<'_, Shared>, id: i64) -> R<tauri::ipc::Response> {
+    let s: Shared = state.inner().clone();
+    blocking(move || {
+        let audio = s.audio(id)?;
+        Ok(tauri::ipc::Response::new(pcm_bytes(&audio)))
     })
     .await
 }

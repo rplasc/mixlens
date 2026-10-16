@@ -1,9 +1,11 @@
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, DestroyRef, computed, effect, inject, input, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { AbPlayer, Contour } from './ab-player';
 import { BandChart } from './band-chart';
 import { hostWidth } from './dom';
 import { clock, hz, num, signed } from './fmt';
 import { LoudnessBridge } from './loudness-bridge';
+import { Player, PlayPair } from './player';
 import { Store } from './store';
 import { Trend } from './trend';
 
@@ -24,15 +26,21 @@ export class DiffStrip {
   readonly windows = input.required<number[]>();
   readonly windowS = input(2);
   readonly duration = input(1);
+  /** Nearly everything differs: scale to this pair's own range, dimmer, so the strip shows where it changed most instead of one solid bar. */
+  readonly relative = input(false);
   readonly left = 34;
   readonly w = hostWidth(900, 300);
   readonly cells = computed(() => {
     const span = Math.max(this.duration(), this.windows().length * this.windowS());
     const px = (t: number) => this.left + (t / span) * (this.w() - this.left);
+    const heard = this.windows().filter((d) => d > -60);
+    const lo = this.relative() && heard.length ? Math.min(...heard) : -60;
+    const hi = this.relative() && heard.length ? Math.max(...heard) : 0;
+    const [base, reach] = this.relative() ? [20, 30] : [20, 75];
     return this.windows().map((d, i) => {
       const t0 = i * this.windowS();
       // One neutral ramp, brighter as the difference grows: a change between bounces isn't a problem, so no severity colours.
-      const mix = Math.round(20 + Math.min(1, (d + 60) / 60) * 75);
+      const mix = Math.round(base + Math.max(0, Math.min(1, (d - lo) / (hi - lo || 1))) * reach);
       const fill = d <= -60 ? 'var(--line-soft)' : `color-mix(in oklab, var(--ink) ${mix}%, var(--line-soft))`;
       const label = d <= -100 ? 'identical (silence)' : d <= -60 ? `identical (${num(d, 0)} dB)` : `${num(d)} dB difference`;
       return { x: px(t0), w: Math.max(1, px(t0 + this.windowS()) - px(t0) - 0.5), fill, title: `${clock(t0)}: ${label}` };
@@ -42,7 +50,7 @@ export class DiffStrip {
 
 @Component({
   selector: 'ml-compare',
-  imports: [FormsModule, LoudnessBridge, DiffStrip, BandChart, Trend],
+  imports: [FormsModule, AbPlayer, LoudnessBridge, DiffStrip, BandChart, Trend],
   template: `
     @if (!store.otherVersions().length) {
       <div class="first">
@@ -90,6 +98,7 @@ export class DiffStrip {
       <!-- Progress is announced beside the Compare button. -->
     } @else if (rc(); as rc) {
       <p class="verdict">{{ refVerdict() }}</p>
+      <ml-ab-player [currentLabel]="label(rc.version_id)" [partnerLabel]="label(rc.reference_id)" [contour]="refContour()" />
 
       <div class="cols">
         <section>
@@ -135,16 +144,18 @@ export class DiffStrip {
       <p class="verdict">{{ verdict() }}</p>
 
       <section>
-        <div class="legend">
-          <span><i class="sw a"></i>{{ store.version()?.label }}</span>
-          <span><i class="sw b"></i>{{ partner()?.label }}</span>
-        </div>
+        <!-- The transport sits on the timeline it drives; its name line is the chart's colour key. -->
+        <ml-ab-player class="transport" [currentLabel]="store.version()?.label ?? ''" [partnerLabel]="partner()?.label ?? ''" />
         @if (partnerReport(); as pr) {
           <ml-loudness-bridge [values]="current()!.loudness.short_term" [compareValues]="pr.loudness.short_term"
-            [hop]="current()!.loudness.short_term_hop_s" [sections]="current()!.sections" [duration]="span()" />
+            [hop]="current()!.loudness.short_term_hop_s" [sections]="current()!.sections" [duration]="span()"
+            [playhead]="playhead()" [focus]="chartFocus()" [seekable]="true" (seek)="player.seek($event)" />
         }
-        <ml-diff-strip [windows]="c.windows" [windowS]="c.window_s" [duration]="span()" />
-        <p class="faint small">Dark: identical. The brighter a stretch, the more the audio changed; faint differences are often time-varying plugins.</p>
+        <ml-diff-strip [windows]="c.windows" [windowS]="c.window_s" [duration]="span()" [relative]="mostlyChanged()" />
+        <p class="faint small">
+          @if (mostlyChanged()) { Almost every stretch changed, so brightness here only shows where it changed most. }
+          @else { Dark: identical. The brighter a stretch, the more the audio changed; faint differences are often time-varying plugins. }
+        </p>
       </section>
 
       <div class="cols">
@@ -228,10 +239,7 @@ export class DiffStrip {
     .first-actions { display: flex; gap: var(--space-xs); margin-top: var(--space-xs); }
     .picker label { display: flex; align-items: center; gap: var(--space-xs); }
     .verdict { font-size: var(--text-subhead); max-width: 80ch; }
-    .legend { display: flex; gap: var(--space-m); font-size: var(--text-caption); margin-bottom: var(--space-2xs); }
-    .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
-    .sw.a { background: var(--a); }
-    .sw.b { background: var(--b); }
+    .transport { margin-bottom: var(--space-xs); }
     .small { font-size: var(--text-caption); }
     h2 { margin-bottom: var(--space-xs); }
     .cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-xl); }
@@ -241,6 +249,7 @@ export class DiffStrip {
 })
 export class Compare {
   readonly store = inject(Store);
+  readonly player = inject(Player);
   readonly num = num;
   readonly signed = signed;
   readonly clock = clock;
@@ -265,7 +274,7 @@ export class Compare {
     const d = rc.level_match_db;
     const level = Math.abs(d) < 0.5
       ? 'Both play at about the same loudness, so you can A/B them directly.'
-      : `The reference is ${num(Math.abs(d))} dB ${d > 0 ? 'louder' : 'quieter'}; turn it ${d > 0 ? 'down' : 'up'} that much before comparing by ear.`;
+      : `The reference is ${num(Math.abs(d))} dB ${d > 0 ? 'louder' : 'quieter'}; the player turns ${d > 0 ? 'B (the reference)' : 'A (this version)'} down to match.`;
     const big = rc.octave.filter((o) => Math.abs(o.delta_db) >= 1.5).sort((a, b) => Math.abs(b.delta_db) - Math.abs(a.delta_db)).slice(0, 3);
     const tone = big.length
       ? ` Largest tonal differences: ${big.map((o) => `${hz(o.lo)}–${hz(o.hi)} Hz ${signed(o.delta_db)} dB`).join(', ')}.`
@@ -285,8 +294,61 @@ export class Compare {
   /** Shared time axis for the timeline and diff strip: the longer of the two versions. */
   readonly span = computed(() => Math.max(this.current()?.file.duration_s ?? 0, this.partnerReport()?.file.duration_s ?? 0, 1));
   // The backend compares a = partner with b = the open version.
+  /** What the A/B player plays: the pair this view measured, with its level and time offsets. */
+  readonly playPair = computed<PlayPair | null>(() => {
+    const cur = this.store.report();
+    const part = this.partner();
+    if (!cur || !part) return null;
+    const dur = (id: number) => (id === cur.id ? cur : part).report.file.duration_s;
+    const rc = this.rc();
+    if (rc) {
+      // The version is always gold and the reference cyan, as in the tables, whichever one is open.
+      const durations = { current: dur(rc.version_id), partner: dur(rc.reference_id) };
+      return { mode: 'reference', current: rc.version_id, partner: rc.reference_id, lagS: 0, loudnessDiff: rc.level_match_db ?? NaN, durations };
+    }
+    const c = this.c();
+    if (!c) return null;
+    // a = the partner, b = the open version.
+    const m = c.metric_deltas.find((x) => x.name === 'integrated');
+    const loudnessDiff = m && m.a != null && m.b != null ? m.a - m.b : NaN;
+    const durations = { current: cur.report.file.duration_s, partner: part.report.file.duration_s };
+    return { mode: 'version', current: cur.id, partner: part.id, lagS: c.lag_ms / 1000, loudnessDiff, durations };
+  });
+  /** Reference mode has no timeline, so the player draws each side's loudness above its position bar. */
+  readonly refContour = computed<Contour | null>(() => {
+    const cur = this.store.report();
+    const part = this.partner();
+    const rc = this.rc();
+    if (!cur || !part || !rc) return null;
+    const loud = (id: number) => (id === cur.id ? cur : part).report.loudness;
+    const v = loud(rc.version_id);
+    return { current: v.short_term, partner: loud(rc.reference_id).short_term, hop: v.short_term_hop_s };
+  });
+  /** The player's position on the timeline, once it has been used, in the audible side's colour. */
+  readonly playhead = computed(() =>
+    this.player.touched() ? { t: this.player.position(), side: this.chartSide(), live: this.player.playing() } : null);
+  /** The series being heard, dimming the other; none until the player is used. */
+  readonly chartFocus = computed(() => (this.player.touched() ? this.chartSide() : null));
+  private readonly chartSide = computed(() => (this.player.side() === 'current' ? 'a' : 'b') as 'a' | 'b');
+
+  constructor() {
+    effect(() => {
+      const pair = this.playPair();
+      // Only the pair drives this; the player's own state (playing, side) must not re-run it.
+      untracked(() => this.player.setPair(pair));
+    });
+    inject(DestroyRef).onDestroy(() => this.player.pause());
+  }
+
   readonly currentBands = computed(() => (this.c()?.third_octave_delta ?? []).map((d) => ({ fc: d.fc, level_db: 0, dev_db: d.dev_b })));
   readonly partnerBands = computed(() => (this.c()?.third_octave_delta ?? []).map((d) => ({ fc: d.fc, level_db: 0, dev_db: d.dev_a })));
+
+  /** At least 80% of the song differs, the same test as the verdict's time-varying-plugins note. */
+  readonly mostlyChanged = computed(() => {
+    const w = this.c()?.windows ?? [];
+    const total = w.filter((d) => d > -100).length;
+    return total > 0 && w.filter((d) => d > -20).length / total > 0.8;
+  });
 
   readonly verdict = computed(() => {
     const c = this.c();

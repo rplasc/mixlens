@@ -176,6 +176,8 @@ export const api = {
   locatePeaks: (id: number) => call<VersionSummary>('locate_peaks', { id }),
   compare: (a: number, b: number) => call<Comparison>('compare_versions', { a, b }),
   compareReference: (a: number, b: number) => call<ReferenceComparison>('compare_reference', { a, b }),
+  /** Decoded audio for the A/B player: rate and frame count (u32), then left and right as f32. Null in browser preview. */
+  playbackAudio: (id: number) => call<ArrayBuffer | null>('playback_audio', { id }),
   section: (id: number, startS: number, endS: number) => call<SectionAnalysis>('section_analysis', { id, startS, endS }),
   codecCheck: (id: number) => call<CodecResult[]>('codec_check', { id }),
   listPlatforms: () => call<Platform[]>('list_platforms'),

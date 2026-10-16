@@ -1,8 +1,9 @@
-import { Injectable, computed, effect, signal } from '@angular/core';
+import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import {
   api, ChatMessage, CodecResult, Comparison, errorText, ExportFormat, GenrePreset, inTauri, Kind, MusicalKey, Platform, Project,
   Provider, ReferenceComparison, ReportEnvelope, SectionAnalysis, SettingsView, StreamingReport, VersionSummary,
 } from './api';
+import { Player } from './player';
 
 export type Tab = 'overview' | 'spectrum' | 'stereo' | 'streaming' | 'compare';
 
@@ -38,6 +39,7 @@ function writeFlag(key: string) {
 
 @Injectable({ providedIn: 'root' })
 export class Store {
+  private readonly player = inject(Player);
   readonly projects = signal<Project[]>([]);
   readonly projectId = signal<number | null>(null);
   readonly versions = signal<VersionSummary[]>([]);
@@ -291,8 +293,9 @@ export class Store {
   }
 
   private resetDerived() {
-    // A compare still running belongs to the old selection.
+    // A compare still running belongs to the old selection, and so does what's playing.
     this.compareRun++;
+    this.player.pause();
     this.comparing.set(false);
     this.comparison.set(null);
     this.refComparison.set(null);

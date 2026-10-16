@@ -45,6 +45,7 @@ fn main() {
             commands::locate_peaks,
             commands::compare_versions,
             commands::compare_reference,
+            commands::playback_audio,
             commands::section_analysis,
             commands::codec_check,
             commands::list_platforms,

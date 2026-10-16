@@ -426,3 +426,15 @@ fn exports_report_as_markdown_and_pdf() {
     let err = export("no-such-dir/r.md", ExportFormat::Markdown).unwrap_err();
     assert!(err.starts_with("Couldn't save the report"), "{err}");
 }
+
+#[test]
+fn playback_pcm_layout() {
+    let a = mixlens_core::audio::from_planar(44100, vec![0.5, -1.25, 0.0], vec![0.25, 1.5, -0.75], "x.wav");
+    let b = crate::commands::pcm_bytes(&a);
+    assert_eq!(b.len(), 8 + 3 * 2 * 4);
+    let u = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+    let f = |k: usize| f32::from_le_bytes(b[8 + k * 4..12 + k * 4].try_into().unwrap());
+    assert_eq!((u(0), u(4)), (44100, 3));
+    // Planar: the whole left channel, then the whole right; values above full scale survive.
+    assert_eq!((0..6).map(f).collect::<Vec<_>>(), vec![0.5, -1.25, 0.0, 0.25, 1.5, -0.75]);
+}
